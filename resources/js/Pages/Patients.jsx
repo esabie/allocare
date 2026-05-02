@@ -2,8 +2,6 @@ import { Head, Link, usePage } from '@inertiajs/react';
 import { useEffect, useMemo, useState } from 'react';
 import ApplicationLogo from '@/Components/ApplicationLogo';
 import ProfileMenu from '@/Components/ProfileMenu';
-import { patients } from '@/data/patients';
-
 const CARDS_PER_PAGE = 9;
 
 function getFirstName(value) {
@@ -24,7 +22,7 @@ function badgeClasses(status) {
 
 export default function Patients({ patients: dbPatients = [] }) {
     const successMessage = usePage().props?.flash?.success;
-    const patientList = dbPatients.length ? dbPatients : patients;
+    const patientList = dbPatients;
     const [searchTerm, setSearchTerm] = useState('');
     const [currentPage, setCurrentPage] = useState(1);
 
@@ -155,6 +153,18 @@ export default function Patients({ patients: dbPatients = [] }) {
                                 </Link>
                             </header>
 
+                            {visiblePatients.length === 0 ? (
+                                <div className="rounded-2xl border border-dashed border-slate-200 bg-white px-8 py-16 text-center">
+                                    <p className="text-lg font-semibold text-slate-900">No patients yet</p>
+                                    <p className="mt-2 text-sm text-slate-600">Add a patient to see them listed here.</p>
+                                    <Link
+                                        href={route('patients.create')}
+                                        className="mt-6 inline-flex rounded-xl bg-slate-900 px-5 py-3 text-sm font-semibold text-white shadow-sm"
+                                    >
+                                        + Add your first patient
+                                    </Link>
+                                </div>
+                            ) : (
                             <section className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
                                 {paginatedPatients.map((patient) => (
                                     <article
@@ -195,7 +205,9 @@ export default function Patients({ patients: dbPatients = [] }) {
                                     </article>
                                 ))}
                             </section>
+                            )}
 
+                            {visiblePatients.length > 0 && (
                             <footer className="mt-10 flex flex-wrap items-center justify-between gap-4 border-t border-slate-200 pt-6">
                                 <div className="flex items-center gap-3">
                                     <span className="rounded-md bg-slate-900 px-3 py-2 text-xs font-semibold uppercase tracking-wide text-white">
@@ -236,6 +248,7 @@ export default function Patients({ patients: dbPatients = [] }) {
                                     </button>
                                 </div>
                             </footer>
+                            )}
                         </div>
                     </main>
                 </div>

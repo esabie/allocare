@@ -34,6 +34,7 @@ use Inertia\Inertia;
 |
 */
 
+if (!function_exists('normalized_primary_role')) {
 function normalized_primary_role($user): ?string
 {
     $role = trim((string) ($user?->primary_role ?? ''));
@@ -412,6 +413,8 @@ function care_plan_summary_payload(string $planSlug, array $data): array
         'data_excerpt' => $excerpt !== '' ? $excerpt : null,
     ];
 }
+
+} // route helper functions (guarded for test / multi-bootstrap)
 
 Route::get('/', function () {
     return Inertia::render('Welcome', [
@@ -1557,8 +1560,6 @@ Route::get('/team', function () {
 
 Route::middleware('auth')->group(function () {
     Route::get('/profile', [ProfileController::class, 'edit'])->name('profile.edit');
-    Route::patch('/profile', [ProfileController::class, 'update'])->name('profile.update');
-    Route::delete('/profile', [ProfileController::class, 'destroy'])->name('profile.destroy');
 });
 
 require __DIR__.'/auth.php';
