@@ -12,7 +12,6 @@ use App\Models\MedicationAdministration;
 use App\Models\FormSnapshot;
 use App\Models\User;
 use Carbon\Carbon;
-use Illuminate\Foundation\Application;
 use Illuminate\Validation\ValidationException;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\File;
@@ -417,12 +416,7 @@ function care_plan_summary_payload(string $planSlug, array $data): array
 } // route helper functions (guarded for test / multi-bootstrap)
 
 Route::get('/', function () {
-    return Inertia::render('Welcome', [
-        'canLogin' => Route::has('login'),
-        'canRegister' => Route::has('register'),
-        'laravelVersion' => Application::VERSION,
-        'phpVersion' => PHP_VERSION,
-    ]);
+    return redirect()->route('login');
 });
 
 Route::get('/dashboard', function () {
