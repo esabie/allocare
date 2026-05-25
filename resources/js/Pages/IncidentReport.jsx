@@ -2,7 +2,6 @@ import { Head, Link, router, usePage } from '@inertiajs/react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import ApplicationLogo from '@/Components/ApplicationLogo';
 import ProfileMenu from '@/Components/ProfileMenu';
-import { getPatientByIdentifier } from '@/data/patients';
 
 const sideTabs = [
     { label: 'Overview' },
@@ -34,14 +33,13 @@ function getStatusMeta(incidentStatus) {
     };
 }
 
-export default function IncidentReport({ patientSlug = 'cr-88210', incidentStatus = 'new', initialSnapshot = null }) {
+export default function IncidentReport({ patientSlug = 'cr-88210', incidentStatus = 'new', initialSnapshot = null, patientData = {}, reporterName = '' }) {
     const formRef = useRef(null);
     const { auth } = usePage().props;
-    const patient = getPatientByIdentifier(patientSlug);
     const [selectedTags, setSelectedTags] = useState([]);
     const [incidentDuration, setIncidentDuration] = useState(5);
     const [selectedImpacts, setSelectedImpacts] = useState([]);
-    const [staffMembers, setStaffMembers] = useState(['Michael Thorne (Lead)', 'Sarah Al-Zaid']);
+    const [staffMembers, setStaffMembers] = useState(reporterName ? [reporterName] : []);
     const [newStaffMember, setNewStaffMember] = useState('');
     const [managerName, setManagerName] = useState('');
     const [managerSignOff, setManagerSignOff] = useState(false);
@@ -100,8 +98,8 @@ export default function IncidentReport({ patientSlug = 'cr-88210', incidentStatu
         });
     }, [initialSnapshot]);
 
-    const saveSnapshot = () => {
-        if (!formRef.current) return;
+    const gatherFormData = () => {
+        if (!formRef.current) return {};
         const data = {};
         const elements = formRef.current.querySelectorAll('input, textarea, select');
         elements.forEach((element, index) => {
@@ -121,8 +119,52 @@ export default function IncidentReport({ patientSlug = 'cr-88210', incidentStatu
         data.managerName = managerName;
         data.managerSignOff = managerSignOff;
         data.updatedBy = auth?.user?.id || null;
+        return data;
+    };
 
+    const saveSnapshot = () => {
+        const data = gatherFormData();
+        if (!Object.keys(data).length) return;
         router.post(route('form-snapshots.save', { formKey: `incident:${patientSlug}` }), { data }, { preserveScroll: true });
+    };
+
+    const [submitting, setSubmitting] = useState(false);
+    const [submitted, setSubmitted] = useState(false);
+
+    const resetForm = () => {
+        if (formRef.current) {
+            formRef.current.reset();
+        }
+        setSelectedTags([]);
+        setSelectedImpacts([]);
+        setIncidentDuration(5);
+        setStaffMembers(reporterName ? [reporterName] : []);
+        setNewStaffMember('');
+        setManagerName('');
+        setManagerSignOff(false);
+    };
+
+    const submitReport = () => {
+        const data = gatherFormData();
+        if (!Object.keys(data).length) return;
+        data.status = 'Submitted';
+        data.submittedAt = new Date().toISOString();
+        setSubmitting(true);
+        router.post(
+            route('form-snapshots.save', { formKey: `incident:${patientSlug}` }),
+            { data },
+            {
+                preserveScroll: true,
+                onSuccess: () => {
+                    setSubmitting(false);
+                    setSubmitted(true);
+                    resetForm();
+                },
+                onError: () => {
+                    setSubmitting(false);
+                },
+            },
+        );
     };
 
     return (
@@ -218,34 +260,63 @@ export default function IncidentReport({ patientSlug = 'cr-88210', incidentStatu
                             <div className="grid grid-cols-1 gap-3 xl:grid-cols-4">
                                 <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
                                     <p className="text-[11px] uppercase tracking-wide text-slate-500">Patient Name</p>
-                                    <p className="mt-1 text-lg font-semibold text-slate-900">{patient?.name || 'Eleanor Thompson'}</p>
+                                    <p className="mt-1 text-lg font-semibold text-slate-900">{patientData.name || 'Unknown Patient'}</p>
                                 </div>
                                 <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
                                     <p className="text-[11px] uppercase tracking-wide text-slate-500">DOB</p>
-                                    <p className="mt-1 text-sm font-medium text-slate-700">{patient?.dob || '08/03/1951'}</p>
+                                    <p className="mt-1 text-sm font-medium text-slate-700">{patientData.dob || 'Not available'}</p>
+                                </div>
+                                <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+                                    <p className="text-[11px] uppercase tracking-wide text-slate-500">Reference</p>
+                                    <p className="mt-1 text-sm font-semibold text-slate-700">{patientData.reference || patientSlug}</p>
                                 </div>
                                 <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
                                     <p className="text-[11px] uppercase tracking-wide text-slate-500">Form Number</p>
                                     <p className="mt-1 text-sm font-semibold text-slate-700">{incidentRef}</p>
                                 </div>
+                            </div>
+                            <div className="mt-3 grid grid-cols-1 gap-3 xl:grid-cols-4">
                                 <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
-                                    <p className="text-[11px] uppercase tracking-wide text-slate-500">Status</p>
+                                    <p className="text-[11px] uppercase tracking-wide text-slate-500">Address</p>
+                                    <p className="mt-1 text-sm text-slate-700">{patientData.address || '-'}</p>
+                                </div>
+                                <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+                                    <p className="text-[11px] uppercase tracking-wide text-slate-500">Allergies</p>
+                                    <p className="mt-1 text-sm text-slate-700">
+                                        {(patientData.allergies || []).length > 0 ? patientData.allergies.join(', ') : 'None'}
+                                    </p>
+                                </div>
+                                <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+                                    <p className="text-[11px] uppercase tracking-wide text-slate-500">Patient Status</p>
+                                    <p className="mt-1 text-sm font-semibold text-slate-700">{patientData.status || '-'}</p>
+                                </div>
+                                <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+                                    <p className="text-[11px] uppercase tracking-wide text-slate-500">Report Status</p>
                                     <p className={`mt-1 text-sm font-semibold ${statusMeta.classes}`}>{statusMeta.label}</p>
                                 </div>
                             </div>
+                        </section>
+
+                        <section className="mb-4 rounded-2xl bg-white p-5">
+                            <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Incident Title</p>
+                            <input
+                                name="incidentTitle"
+                                type="text"
+                                required
+                                placeholder="Briefly describe the incident in one sentence"
+                                className="mt-2 w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm"
+                            />
                         </section>
 
                         <section className="mb-4 grid grid-cols-1 gap-4 xl:grid-cols-3">
                             <div className="rounded-2xl bg-white p-4">
                                 <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Incident Date & Time</p>
                                 <div className="mt-3 space-y-2 text-sm text-slate-700">
-                                    <input type="date" required className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2" />
+                                    <input name="incidentDate" type="date" required className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2" />
                                     <input
-                                        type="text"
+                                        name="incidentTime"
+                                        type="time"
                                         required
-                                        placeholder="HH:MM"
-                                        inputMode="numeric"
-                                        pattern="^([01][0-9]|2[0-3]):[0-5][0-9]$"
                                         className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2"
                                     />
                                 </div>
@@ -253,6 +324,7 @@ export default function IncidentReport({ patientSlug = 'cr-88210', incidentStatu
                             <div className="rounded-2xl bg-white p-4">
                                 <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Where incident occurred</p>
                                 <input
+                                    name="location"
                                     type="text"
                                     required
                                     placeholder="e.g. Communal Lounge - South Wing"
@@ -260,11 +332,13 @@ export default function IncidentReport({ patientSlug = 'cr-88210', incidentStatu
                                 />
                             </div>
                             <div className="rounded-2xl bg-white p-4">
-                                <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Personnel</p>
+                                <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Reporting Staff Member</p>
                                 <input
+                                    name="reporterName"
                                     type="text"
                                     required
-                                    placeholder="Nurse Michael Thorne"
+                                    defaultValue={reporterName}
+                                    placeholder="Your name"
                                     className="mt-3 w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm"
                                 />
                             </div>
@@ -276,6 +350,7 @@ export default function IncidentReport({ patientSlug = 'cr-88210', incidentStatu
                                 <div className="lg:col-span-2">
                                     <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">What happened before the behaviour</p>
                                     <textarea
+                                        name="antecedent"
                                         rows={5}
                                         required
                                         placeholder="Describe what happened before the incident, if there were any triggers or concerns..."
@@ -309,7 +384,7 @@ export default function IncidentReport({ patientSlug = 'cr-88210', incidentStatu
                             <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
                                 <div className="lg:col-span-2">
                                     <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Detailed Description of what the person did</p>
-                                    <textarea rows={6} required placeholder="Describe exactly what the person did, what did their behaviour look or sound like? Avoid labels such as 'aggressive'; describe the observable actions...." className="w-full rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm" />
+                                    <textarea name="behaviour" rows={6} required placeholder="Describe exactly what the person did, what did their behaviour look or sound like? Avoid labels such as 'aggressive'; describe the observable actions...." className="w-full rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm" />
                                 </div>
                                 <div>
                                     <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Impact & Duration</p>
@@ -360,11 +435,11 @@ export default function IncidentReport({ patientSlug = 'cr-88210', incidentStatu
                             <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
                                 <div>
                                     <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">What Happened After the Behaviour?</p>
-                                    <textarea rows={4} required placeholder="How did staff or others respond? What was the outcome, did the behaviour stop, continue, or escalate? " className="w-full rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm" />
+                                    <textarea name="consequence" rows={4} required placeholder="How did staff or others respond? What was the outcome, did the behaviour stop, continue, or escalate? " className="w-full rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm" />
                                 </div>
                                 <div>
                                     <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Immediate Outcome</p>
-                                    <textarea rows={4} required placeholder="State of the patient post-incident, immediate safety check results..." className="w-full rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm" />
+                                    <textarea name="immediateOutcome" rows={4} required placeholder="State of the patient post-incident, immediate safety check results..." className="w-full rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm" />
                                 </div>
                             </div>
                         </section>
@@ -375,15 +450,15 @@ export default function IncidentReport({ patientSlug = 'cr-88210', incidentStatu
                                 <div className="lg:col-span-2 space-y-3">
                                     <div>
                                         <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-300">Lessons Learnt / Preventive Strategies</p>
-                                        <textarea rows={3} required placeholder="What could have been done differently?" className="w-full rounded-xl border border-slate-700 bg-slate-800 p-3 text-sm text-white" />
+                                        <textarea name="lessonsLearnt" rows={3} required placeholder="What could have been done differently?" className="w-full rounded-xl border border-slate-700 bg-slate-800 p-3 text-sm text-white" />
                                     </div>
                                     <div>
                                         <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-300">Were any new triggers identified?</p>
-                                        <textarea rows={3} required placeholder="New triggers identified..." className="w-full rounded-xl border border-slate-700 bg-slate-800 p-3 text-sm text-white" />
+                                        <textarea name="newTriggers" rows={3} required placeholder="New triggers identified..." className="w-full rounded-xl border border-slate-700 bg-slate-800 p-3 text-sm text-white" />
                                     </div>
                                     <div>
                                         <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-300">What actions or changes will be made?</p>
-                                        <textarea rows={3} required placeholder="(e.g., communication strategy, environment adjustment, staff approach)..." className="w-full rounded-xl border border-slate-700 bg-slate-800 p-3 text-sm text-white" />
+                                        <textarea name="actionsPlanned" rows={3} required placeholder="(e.g., communication strategy, environment adjustment, staff approach)..." className="w-full rounded-xl border border-slate-700 bg-slate-800 p-3 text-sm text-white" />
                                     </div>
                                 </div>
                                 <div>
@@ -454,20 +529,35 @@ export default function IncidentReport({ patientSlug = 'cr-88210', incidentStatu
                                     </label>
                                 </div>
                                 <div className="flex flex-col justify-end gap-3">
-                                    <button type="button" onClick={saveSnapshot} className="rounded-xl border border-slate-200 px-5 py-2.5 text-sm font-semibold text-slate-700">
-                                        Save as Draft
-                                    </button>
-                                    <button
-                                        type="submit"
-                                        onClick={saveSnapshot}
-                                        disabled={!managerName.trim() || !managerSignOff}
-                                        className="rounded-xl bg-emerald-700 px-5 py-2.5 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
-                                    >
-                                        Finalise & Submit Report
-                                    </button>
-                                    <p className="text-[11px] font-medium uppercase tracking-wide text-slate-400">
-                                        {managerSignOff ? `Ready to submit • ${signOffTime}` : 'Electronic signature pending'}
-                                    </p>
+                                    {submitted ? (
+                                        <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-5 py-4 text-center">
+                                            <p className="text-sm font-semibold text-emerald-700">Incident Report Submitted Successfully</p>
+                                            <p className="mt-1 text-xs text-emerald-600">Reference: {incidentRef}</p>
+                                            <Link
+                                                href={route('patients.show', patientSlug)}
+                                                className="mt-3 inline-block rounded-lg bg-emerald-700 px-4 py-2 text-xs font-semibold text-white hover:bg-emerald-800"
+                                            >
+                                                Back to Patient Record
+                                            </Link>
+                                        </div>
+                                    ) : (
+                                        <>
+                                            <button type="button" onClick={saveSnapshot} className="rounded-xl border border-slate-200 px-5 py-2.5 text-sm font-semibold text-slate-700">
+                                                Save as Draft
+                                            </button>
+                                            <button
+                                                type="button"
+                                                onClick={submitReport}
+                                                disabled={!managerName.trim() || !managerSignOff || submitting}
+                                                className="rounded-xl bg-emerald-700 px-5 py-2.5 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
+                                            >
+                                                {submitting ? 'Submitting...' : 'Finalise & Submit Report'}
+                                            </button>
+                                            <p className="text-[11px] font-medium uppercase tracking-wide text-slate-400">
+                                                {managerSignOff ? `Ready to submit • ${signOffTime}` : 'Electronic signature pending'}
+                                            </p>
+                                        </>
+                                    )}
                                 </div>
                             </div>
                         </section>

@@ -1,7 +1,19 @@
 import { Head, Link, useForm } from '@inertiajs/react';
-import { useRef, useState } from 'react';
-import ApplicationLogo from '@/Components/ApplicationLogo';
+import { useCallback, useRef, useState } from 'react';
+import DashboardSidebar from '@/Components/DashboardSidebar';
+import AppHeaderNav from '@/Components/AppHeaderNav';
 import ProfileMenu from '@/Components/ProfileMenu';
+
+function localDateInputMax() {
+    const today = new Date();
+    const year = today.getFullYear();
+    const month = String(today.getMonth() + 1).padStart(2, '0');
+    const day = String(today.getDate()).padStart(2, '0');
+
+    return `${year}-${month}-${day}`;
+}
+
+const maxDateOfBirth = localDateInputMax();
 
 export default function PatientsCreate() {
     const fileInputRef = useRef(null);
@@ -37,40 +49,49 @@ export default function PatientsCreate() {
         dob: '',
         allergies: '',
         address: '',
+        latitude: '',
+        longitude: '',
         phone: '',
-        status: 'ACTIVE',
+        status: 'GREEN',
     });
     const formErrorMessages = Object.values(errors || {});
 
     const ragToStatus = {
-        green: 'ACTIVE',
-        amber: 'ON LEAVE',
-        red: 'OVERDUE',
+        green: 'GREEN',
+        amber: 'AMBER',
+        red: 'RED',
     };
 
     const submit = (event) => {
         event.preventDefault();
-        if (!photoFile) {
-            setPhotoError('Patient photo is required.');
-            return;
-        }
 
         const fullName = `${data.first_name} ${data.last_name}`.trim();
         const mergedAddress = [data.address_line_1, data.city, data.postcode].filter(Boolean).join(', ');
 
-        transform((form) => ({
-            ...form,
-            nhs_number: String(form.nhs_number || '').replace(/\D/g, ''),
-            name: fullName,
-            dob: form.date_of_birth,
-            allergies: form.severe_allergies,
-            address: mergedAddress,
-            phone: form.phone_number,
-            status: ragToStatus[form.rag_status] || 'ACTIVE',
-            photo: photoFile,
-        }));
+        transform((form) => {
+            const payload = {
+                ...form,
+                nhs_number: String(form.nhs_number || '').replace(/\D/g, ''),
+                name: fullName,
+                dob: form.date_of_birth,
+                allergies: form.severe_allergies?.trim() || null,
+                primary_diagnosis: form.primary_diagnosis?.trim() || null,
+                severe_allergies: form.severe_allergies?.trim() || null,
+                address: mergedAddress,
+                latitude: form.latitude || null,
+                longitude: form.longitude || null,
+                phone: form.phone_number,
+                status: ragToStatus[form.rag_status] || 'ACTIVE',
+            };
 
-        post(route('patients.store'), { forceFormData: true });
+            if (photoFile) {
+                payload.photo = photoFile;
+            }
+
+            return payload;
+        });
+
+        post(route('patients.store'), { forceFormData: Boolean(photoFile) });
     };
 
     const handleNhsNumberChange = (value) => {
@@ -128,7 +149,61 @@ export default function PatientsCreate() {
         if (fileInputRef.current) {
             fileInputRef.current.value = '';
         }
-        setPhotoError('Patient photo is required.');
+        setPhotoError('');
+    };
+
+    const [postcodeInput, setPostcodeInput] = useState('');
+    const [postcodeLoading, setPostcodeLoading] = useState(false);
+    const [postcodeError, setPostcodeError] = useState('');
+    const [addressOptions, setAddressOptions] = useState([]);
+    const [addressSelected, setAddressSelected] = useState(false);
+    const [manualEntryNeeded, setManualEntryNeeded] = useState(false);
+
+    const lookupPostcode = useCallback(async () => {
+        const cleaned = postcodeInput.trim().replace(/\s+/g, '');
+        if (!cleaned) {
+            setPostcodeError('Please enter a postcode.');
+            return;
+        }
+        setPostcodeLoading(true);
+        setPostcodeError('');
+        setAddressOptions([]);
+        setAddressSelected(false);
+        setManualEntryNeeded(false);
+
+        try {
+            const response = await fetch(route('api.postcode-lookup', cleaned));
+            const json = await response.json();
+            if (!response.ok) {
+                setPostcodeError(json.error || 'Postcode not found.');
+                return;
+            }
+            if (json.manual_entry_needed) {
+                setManualEntryNeeded(true);
+            }
+            setAddressOptions(json.addresses || []);
+        } catch {
+            setPostcodeError('Network error. Please try again.');
+        } finally {
+            setPostcodeLoading(false);
+        }
+    }, [postcodeInput]);
+
+    const selectAddress = (addr) => {
+        setData((prev) => ({
+            ...prev,
+            address_line_1: addr.address_line_1 || '',
+            city: addr.city || '',
+            postcode: addr.postcode || postcodeInput.trim(),
+            latitude: addr.latitude || '',
+            longitude: addr.longitude || '',
+        }));
+        if (addr.address_line_1) {
+            setAddressSelected(true);
+        } else {
+            setManualEntryNeeded(true);
+            setAddressSelected(true);
+        }
     };
 
     return (
@@ -136,58 +211,11 @@ export default function PatientsCreate() {
             <Head title="Register New Client" />
             <div className="min-h-screen bg-slate-100 text-slate-700">
                 <div className="flex w-full">
-                    <aside className="hidden min-h-screen w-64 border-r border-slate-200 bg-slate-50 px-5 py-8 lg:flex lg:flex-col">
-                        <div className="mb-10">
-                            <div className="mb-3">
-                                <Link href={route('dashboard')}>
-                                    <ApplicationLogo className="block w-full" />
-                                </Link>
-                            </div>
-                            <p className="text-xs uppercase tracking-[0.2em] text-slate-400">Clinical Precision</p>
-                        </div>
-
-                        <nav className="space-y-2">
-                            <Link href={route('dashboard')} className="block w-full rounded-xl px-4 py-3 text-left text-sm font-medium text-slate-600 hover:bg-slate-100">
-                                Overview
-                            </Link>
-                            <button type="button" className="w-full rounded-xl px-4 py-3 text-left text-sm font-medium text-slate-600 hover:bg-slate-100">
-                                Journal
-                            </button>
-                            <button type="button" className="w-full rounded-xl px-4 py-3 text-left text-sm font-medium text-slate-600 hover:bg-slate-100">
-                                Care Alerts
-                            </button>
-                            <button type="button" className="w-full rounded-xl px-4 py-3 text-left text-sm font-medium text-slate-600 hover:bg-slate-100">
-                                Analytics
-                            </button>
-                            <Link href={route('employees')} className="block w-full rounded-xl px-4 py-3 text-left text-sm font-medium text-slate-600 hover:bg-slate-100">
-                                Employees
-                            </Link>
-                        </nav>
-
-                        <div className="mt-auto space-y-2">
-                            <button type="button" className="w-full rounded-xl bg-white px-4 py-3 text-left text-sm font-medium text-slate-600">
-                                Insights
-                            </button>
-                            <button type="button" className="w-full rounded-xl px-4 py-3 text-left text-sm text-slate-500">
-                                Help
-                            </button>
-                            <button type="button" className="w-full rounded-xl px-4 py-3 text-left text-sm text-slate-500">
-                                Sign out
-                            </button>
-                        </div>
-                    </aside>
+                    <DashboardSidebar />
 
                     <main className="flex-1 p-4 sm:p-6 lg:p-8">
                         <header className="mb-6 flex flex-wrap items-center justify-between gap-4 rounded-2xl bg-white px-5 py-4">
-                            <div className="flex items-center gap-6 text-sm font-medium text-slate-600">
-                                <Link href={route('patients')} className="text-slate-900">
-                                    Patients
-                                </Link>
-                                <Link href={route('schedules')} className="hover:text-slate-900">Schedules</Link>
-                                <span>Reports</span>
-                                <span>Inventory</span>
-                            </div>
-
+                            <AppHeaderNav active="patients" />
                             <div className="flex items-center gap-3">
                                 <ProfileMenu />
                             </div>
@@ -256,7 +284,7 @@ export default function PatientsCreate() {
                                     >
                                         Remove
                                     </button>
-                                    <span className="text-xs text-slate-500">JPG or PNG, max 3MB. Recommended 400x400px.</span>
+                                    <span className="text-xs text-slate-500">Optional. JPG or PNG, max 3MB. Recommended 400x400px.</span>
                                 </div>
                                 {(photoError || errors.photo) && (
                                     <p className="mb-3 text-xs font-medium text-rose-600">{photoError || errors.photo}</p>
@@ -284,7 +312,7 @@ export default function PatientsCreate() {
                                     </div>
                                     <div>
                                         <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">Date of Birth</label>
-                                        <input required type="date" value={data.date_of_birth} onChange={(e) => setData('date_of_birth', e.target.value)} className="mt-1 w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm" />
+                                        <input required type="date" max={maxDateOfBirth} value={data.date_of_birth} onChange={(e) => setData('date_of_birth', e.target.value)} className="mt-1 w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm" />
                                     </div>
                                     <div>
                                         <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">Gender</label>
@@ -301,7 +329,7 @@ export default function PatientsCreate() {
                                 <p className="text-sm text-slate-500">Primary care indicators and safety status</p>
                                 <div className="mt-4 space-y-3">
                                     <div>
-                                        <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">Primary Diagnosis</label>
+                                        <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">Primary Diagnosis (Optional)</label>
                                         <input value={data.primary_diagnosis} onChange={(e) => setData('primary_diagnosis', e.target.value)} className="mt-1 w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm" placeholder="e.g. Type II Diabetes, Early Onset Dementia" />
                                         {errors.primary_diagnosis && <p className="mt-1 text-xs text-rose-600">{errors.primary_diagnosis}</p>}
                                     </div>
@@ -336,27 +364,102 @@ export default function PatientsCreate() {
                             <article className="rounded-2xl border border-slate-200 bg-white p-5">
                                 <h2 className="text-2xl font-semibold text-slate-900">Contact Information</h2>
                                 <p className="text-sm text-slate-500">Communication and location details</p>
-                                <div className="mt-4 grid grid-cols-2 gap-3">
-                                    <div className="col-span-2">
-                                        <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">Address Line 1</label>
-                                        <input required value={data.address_line_1} onChange={(e) => setData('address_line_1', e.target.value)} placeholder="Flat/House number and street (e.g. 221B Baker Street)" className="mt-1 w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm" />
-                                    </div>
-                                    <div>
-                                        <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">City</label>
-                                        <input required value={data.city} onChange={(e) => setData('city', e.target.value)} placeholder="e.g. London" className="mt-1 w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm" />
-                                    </div>
+                                <div className="mt-4 space-y-4">
+                                    {/* Postcode lookup */}
                                     <div>
                                         <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">Postcode</label>
-                                        <input required value={data.postcode} onChange={(e) => setData('postcode', e.target.value)} placeholder="e.g. SW1A 1AA" className="mt-1 w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm" />
+                                        <div className="mt-1 flex gap-2">
+                                            <input
+                                                value={postcodeInput}
+                                                onChange={(e) => setPostcodeInput(e.target.value.toUpperCase())}
+                                                onKeyDown={(e) => e.key === 'Enter' && (e.preventDefault(), lookupPostcode())}
+                                                placeholder="e.g. SW1A 1AA"
+                                                className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm"
+                                            />
+                                            <button
+                                                type="button"
+                                                onClick={lookupPostcode}
+                                                disabled={postcodeLoading}
+                                                className="shrink-0 rounded-lg bg-emerald-600 px-4 py-2 text-xs font-semibold text-white shadow-sm transition hover:bg-emerald-700 disabled:opacity-50"
+                                            >
+                                                {postcodeLoading ? 'Searching…' : 'Find Address'}
+                                            </button>
+                                        </div>
+                                        {postcodeError && <p className="mt-1 text-xs text-rose-600">{postcodeError}</p>}
                                         {errors.postcode && <p className="mt-1 text-xs text-rose-600">{errors.postcode}</p>}
                                     </div>
-                                    <div>
-                                        <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">Phone Number</label>
-                                        <input required value={data.phone_number} onChange={(e) => setData('phone_number', e.target.value)} placeholder="07XXXXXXXXX" className="mt-1 w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm" />
-                                    </div>
-                                    <div>
-                                        <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">Email Address</label>
-                                        <input required type="email" value={data.email_address} onChange={(e) => setData('email_address', e.target.value)} placeholder="name@example.co.uk" className="mt-1 w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm" />
+
+                                    {/* Address selection */}
+                                    {addressOptions.length > 0 && !addressSelected && (
+                                        <div>
+                                            <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">Select Address</label>
+                                            <div className="mt-1 max-h-48 overflow-y-auto rounded-lg border border-slate-200 bg-white">
+                                                {addressOptions.map((addr, idx) => (
+                                                    <button
+                                                        key={idx}
+                                                        type="button"
+                                                        onClick={() => selectAddress(addr)}
+                                                        className="w-full border-b border-slate-100 px-3 py-2.5 text-left text-sm text-slate-700 transition last:border-b-0 hover:bg-emerald-50"
+                                                    >
+                                                        {addr.label}
+                                                    </button>
+                                                ))}
+                                            </div>
+                                            {manualEntryNeeded && (
+                                                <p className="mt-1 text-xs text-slate-500">Postcode verified. Please select the area and enter your street address below.</p>
+                                            )}
+                                        </div>
+                                    )}
+
+                                    {/* Confirmed address display */}
+                                    {addressSelected && !manualEntryNeeded && (
+                                        <div className="rounded-lg border border-emerald-200 bg-emerald-50/40 p-3 space-y-2">
+                                            <div className="flex items-center justify-between">
+                                                <p className="text-xs font-semibold uppercase tracking-wide text-emerald-700">Confirmed Address</p>
+                                                <button
+                                                    type="button"
+                                                    onClick={() => { setAddressSelected(false); setAddressOptions([]); setPostcodeInput(''); setManualEntryNeeded(false); setData((prev) => ({ ...prev, address_line_1: '', city: '', postcode: '' })); }}
+                                                    className="text-xs font-medium text-emerald-700 hover:text-emerald-900"
+                                                >
+                                                    Change
+                                                </button>
+                                            </div>
+                                            <p className="text-sm font-medium text-slate-800">
+                                                {[data.address_line_1, data.city, data.postcode].filter(Boolean).join(', ')}
+                                            </p>
+                                        </div>
+                                    )}
+
+                                    {/* Fallback: manual street entry when full addresses unavailable */}
+                                    {addressSelected && manualEntryNeeded && (
+                                        <div className="rounded-lg border border-amber-200 bg-amber-50/40 p-3 space-y-3">
+                                            <div className="flex items-center justify-between">
+                                                <p className="text-xs font-semibold uppercase tracking-wide text-amber-700">Postcode Verified — Enter Street Address</p>
+                                                <button
+                                                    type="button"
+                                                    onClick={() => { setAddressSelected(false); setAddressOptions([]); setPostcodeInput(''); setManualEntryNeeded(false); setData((prev) => ({ ...prev, address_line_1: '', city: '', postcode: '' })); }}
+                                                    className="text-xs font-medium text-amber-700 hover:text-amber-900"
+                                                >
+                                                    Change
+                                                </button>
+                                            </div>
+                                            <div>
+                                                <input required value={data.address_line_1} onChange={(e) => setData('address_line_1', e.target.value)} placeholder="House number and street" className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm" />
+                                            </div>
+                                            <p className="text-xs text-slate-500">{data.city}, {data.postcode}</p>
+                                        </div>
+                                    )}
+
+                                    {/* Phone and email */}
+                                    <div className="grid grid-cols-2 gap-3">
+                                        <div>
+                                            <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">Phone Number (Optional)</label>
+                                            <input value={data.phone_number} onChange={(e) => setData('phone_number', e.target.value)} placeholder="07XXXXXXXXX" className="mt-1 w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm" />
+                                        </div>
+                                        <div>
+                                            <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">Email Address</label>
+                                            <input required type="email" value={data.email_address} onChange={(e) => setData('email_address', e.target.value)} placeholder="name@example.co.uk" className="mt-1 w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm" />
+                                        </div>
                                     </div>
                                 </div>
                                 {errors.address_line_1 && <p className="mt-2 text-xs text-rose-600">{errors.address_line_1}</p>}
@@ -373,13 +476,13 @@ export default function PatientsCreate() {
                                         {errors.next_of_kin && <p className="mt-1 text-xs text-rose-600">{errors.next_of_kin}</p>}
                                     </div>
                                     <div>
-                                        <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">Next of Kin tel</label>
-                                        <input required value={data.next_of_kin_tel} onChange={(e) => setData('next_of_kin_tel', e.target.value)} placeholder="07XXXXXXXXX" className="mt-1 w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm" />
+                                        <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">Next of Kin tel (Optional)</label>
+                                        <input value={data.next_of_kin_tel} onChange={(e) => setData('next_of_kin_tel', e.target.value)} placeholder="07XXXXXXXXX" className="mt-1 w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm" />
                                         {errors.next_of_kin_tel && <p className="mt-1 text-xs text-rose-600">{errors.next_of_kin_tel}</p>}
                                     </div>
                                     <div>
-                                        <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">Next of Kin email</label>
-                                        <input required type="email" value={data.next_of_kin_email} onChange={(e) => setData('next_of_kin_email', e.target.value)} placeholder="nextofkin@example.co.uk" className="mt-1 w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm" />
+                                        <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">Next of Kin email (Optional)</label>
+                                        <input type="email" value={data.next_of_kin_email} onChange={(e) => setData('next_of_kin_email', e.target.value)} placeholder="nextofkin@example.co.uk" className="mt-1 w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm" />
                                         {errors.next_of_kin_email && <p className="mt-1 text-xs text-rose-600">{errors.next_of_kin_email}</p>}
                                     </div>
                                     <div>
@@ -388,8 +491,8 @@ export default function PatientsCreate() {
                                         {errors.other_relevant_people && <p className="mt-1 text-xs text-rose-600">{errors.other_relevant_people}</p>}
                                     </div>
                                     <div>
-                                        <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">Social services number</label>
-                                        <input required value={data.social_services_number} onChange={(e) => setData('social_services_number', e.target.value)} className="mt-1 w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm" />
+                                        <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">Social services number (Optional)</label>
+                                        <input value={data.social_services_number} onChange={(e) => setData('social_services_number', e.target.value)} className="mt-1 w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm" />
                                         {errors.social_services_number && <p className="mt-1 text-xs text-rose-600">{errors.social_services_number}</p>}
                                     </div>
                                     <div>

@@ -1,6 +1,7 @@
 import { Head, Link, router, usePage } from '@inertiajs/react';
 import { useEffect, useRef, useState } from 'react';
-import ApplicationLogo from '@/Components/ApplicationLogo';
+import DashboardSidebar from '@/Components/DashboardSidebar';
+import AppHeaderNav from '@/Components/AppHeaderNav';
 import ProfileMenu from '@/Components/ProfileMenu';
 
 const roleOptions = [
@@ -10,7 +11,18 @@ const roleOptions = [
     { label: 'Care Worker', value: 'care_worker' },
 ];
 
-function Field({ label, name, placeholder = '', className = '', defaultValue = '', type = 'text' }) {
+function localDateInputMax() {
+    const today = new Date();
+    const year = today.getFullYear();
+    const month = String(today.getMonth() + 1).padStart(2, '0');
+    const day = String(today.getDate()).padStart(2, '0');
+
+    return `${year}-${month}-${day}`;
+}
+
+const maxDateOfBirth = localDateInputMax();
+
+function Field({ label, name, placeholder = '', className = '', defaultValue = '', type = 'text', max }) {
     return (
         <div className={className}>
             <label className="mb-1 block text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-500">{label}</label>
@@ -18,6 +30,7 @@ function Field({ label, name, placeholder = '', className = '', defaultValue = '
                 type={type}
                 name={name}
                 defaultValue={defaultValue}
+                max={max}
                 autoComplete="off"
                 placeholder={placeholder}
                 className="w-full rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700 outline-none transition focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100"
@@ -35,8 +48,21 @@ function Section({ title, children }) {
     );
 }
 
+function normalizeDobForSubmit(value) {
+    if (!value) return '';
+    if (/^\d{4}-\d{2}-\d{2}$/.test(value)) return value;
+
+    const slashMatch = String(value).match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
+    if (slashMatch) {
+        const [, day, month, year] = slashMatch;
+        return `${year}-${month}-${day}`;
+    }
+
+    return value;
+}
+
 export default function EmployeesCreate() {
-    const { initialSnapshot = {} } = usePage().props;
+    const { initialSnapshot = {}, errors: serverErrors = {} } = usePage().props;
     const shouldRestoreSnapshot = (() => {
         if (typeof window === 'undefined' || typeof performance === 'undefined') return true;
         const [navEntry] = performance.getEntriesByType('navigation');
@@ -128,12 +154,20 @@ export default function EmployeesCreate() {
         const snapshot = collectSnapshot();
         if (!snapshot) return;
         const payload = { ...snapshot };
+        if (payload.date_of_birth) {
+            payload.date_of_birth = normalizeDobForSubmit(payload.date_of_birth);
+        }
         if (photoFile) {
             payload.photo = photoFile;
         }
 
-        router.post(route('employees.store'), payload, { forceFormData: true });
+        router.post(route('employees.store'), payload, {
+            forceFormData: true,
+            preserveScroll: true,
+        });
     };
+
+    const errorMessages = Object.values(serverErrors || {});
 
     const handlePhotoSelect = (event) => {
         const file = event.target.files?.[0];
@@ -185,57 +219,11 @@ export default function EmployeesCreate() {
 
             <div className="min-h-screen bg-slate-100 text-slate-700">
                 <div className="flex w-full">
-                    <aside className="hidden min-h-screen w-64 border-r border-slate-200 bg-slate-50 px-5 py-8 lg:flex lg:flex-col">
-                        <div className="mb-10">
-                            <div className="mb-3">
-                                <Link href={route('dashboard')}>
-                                    <ApplicationLogo className="block w-full" />
-                                </Link>
-                            </div>
-                            <p className="text-xs uppercase tracking-[0.2em] text-slate-400">Clinical Precision</p>
-                        </div>
-
-                        <nav className="space-y-2">
-                            <Link href={route('dashboard')} className="block w-full rounded-xl px-4 py-3 text-left text-sm font-medium text-slate-600 hover:bg-slate-100">
-                                Overview
-                            </Link>
-                            <button type="button" className="w-full rounded-xl px-4 py-3 text-left text-sm font-medium text-slate-600 hover:bg-slate-100">
-                                Journal
-                            </button>
-                            <button type="button" className="w-full rounded-xl px-4 py-3 text-left text-sm font-medium text-slate-600 hover:bg-slate-100">
-                                Care Alerts
-                            </button>
-                            <button type="button" className="w-full rounded-xl px-4 py-3 text-left text-sm font-medium text-slate-600 hover:bg-slate-100">
-                                Analytics
-                            </button>
-                            <Link href={route('employees')} className="block w-full rounded-xl bg-emerald-50 px-4 py-3 text-left text-sm font-medium text-emerald-700">
-                                Employees
-                            </Link>
-                        </nav>
-
-                        <div className="mt-auto space-y-2">
-                            <button type="button" className="w-full rounded-xl bg-white px-4 py-3 text-left text-sm font-medium text-slate-600">
-                                Insights
-                            </button>
-                            <button type="button" className="w-full rounded-xl px-4 py-3 text-left text-sm text-slate-500">
-                                Help
-                            </button>
-                            <button type="button" className="w-full rounded-xl px-4 py-3 text-left text-sm text-slate-500">
-                                Sign out
-                            </button>
-                        </div>
-                    </aside>
+                    <DashboardSidebar active="employees" />
 
                     <main className="flex-1 p-4 sm:p-6 lg:p-8">
                         <header className="mb-6 flex flex-wrap items-center justify-between gap-4 rounded-2xl bg-white px-5 py-4">
-                            <div className="flex items-center gap-6 text-sm font-medium text-slate-600">
-                                <Link href={route('patients')} className="hover:text-slate-900">
-                                    Patients
-                                </Link>
-                                <span>Schedules</span>
-                                <span>Reports</span>
-                                <span>Inventory</span>
-                            </div>
+                            <AppHeaderNav />
                             <div className="flex items-center gap-3">
                                 <ProfileMenu />
                             </div>
@@ -252,6 +240,17 @@ export default function EmployeesCreate() {
                             <span>/</span>
                             <span className="text-slate-900">Staff Enrollment</span>
                         </div>
+
+                        {errorMessages.length > 0 && (
+                            <div className="mb-4 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800">
+                                <p className="font-semibold">Could not complete registration:</p>
+                                <ul className="mt-2 list-disc space-y-1 pl-5">
+                                    {errorMessages.map((message) => (
+                                        <li key={message}>{message}</li>
+                                    ))}
+                                </ul>
+                            </div>
+                        )}
 
                         <div className="mb-4 flex items-start justify-between gap-3">
                             <div>
@@ -307,13 +306,18 @@ export default function EmployeesCreate() {
                                 </div>
 
                                 <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-3">
-                                    <Field
-                                        label="Date of Birth"
-                                        name="date_of_birth"
-                                        type="date"
-                                        className="md:col-span-2"
-                                        defaultValue={normalizeDateForInput(snapshot.date_of_birth)}
-                                    />
+                                    <div className="md:col-span-2">
+                                        <Field
+                                            label="Date of Birth"
+                                            name="date_of_birth"
+                                            type="date"
+                                            max={maxDateOfBirth}
+                                            defaultValue={normalizeDateForInput(snapshot.date_of_birth)}
+                                        />
+                                        {serverErrors.date_of_birth && (
+                                            <p className="mt-1 text-xs text-rose-600">{serverErrors.date_of_birth}</p>
+                                        )}
+                                    </div>
                                     <div>
                                         <label className="mb-1 block text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-500">Sex</label>
                                         <div className="flex gap-3 rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-sm">

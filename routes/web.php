@@ -10,13 +10,18 @@ use App\Models\PatientSchedule;
 use App\Models\PatientVital;
 use App\Models\MedicationAdministration;
 use App\Models\FormSnapshot;
+use App\Models\AuditEvent;
+use App\Models\CareJournalEntry;
 use App\Models\User;
+use App\Support\AuditTrail;
 use Carbon\Carbon;
+use Illuminate\Http\Request;
 use Illuminate\Validation\ValidationException;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Facades\Route;
 use Illuminate\Support\Str;
@@ -69,6 +74,65 @@ function resolve_care_worker_user_or_fail(int $userId): User
     }
 
     return $user;
+}
+
+function normalize_employee_date_of_birth(?string $rawDateOfBirth): ?string
+{
+    $rawDateOfBirth = trim((string) $rawDateOfBirth);
+    if ($rawDateOfBirth === '') {
+        return null;
+    }
+
+    foreach (['Y-m-d', 'd/m/Y', 'd-m-Y'] as $format) {
+        try {
+            $parsedDate = Carbon::createFromFormat($format, $rawDateOfBirth);
+            if ($parsedDate !== false && $parsedDate->format($format) === $rawDateOfBirth) {
+                if ($parsedDate->copy()->startOfDay()->gt(Carbon::today())) {
+                    throw ValidationException::withMessages([
+                        'date_of_birth' => 'Date of birth cannot be in the future.',
+                    ]);
+                }
+
+                return $parsedDate->format('Y-m-d');
+            }
+        } catch (\Throwable) {
+            // Try the next accepted format.
+        }
+    }
+
+    throw ValidationException::withMessages([
+        'date_of_birth' => 'Use DD/MM/YYYY or YYYY-MM-DD for date of birth.',
+    ]);
+}
+
+function resolve_schedule_window(string $visitDate, string $startTime, string $endTime): array
+{
+    $startAt = Carbon::parse($visitDate.' '.$startTime);
+    $endAt = Carbon::parse($visitDate.' '.$endTime);
+
+    if ($endAt->lessThanOrEqualTo($startAt)) {
+        $endAt = $endAt->copy()->addDay();
+    }
+
+    $durationMinutes = $startAt->diffInMinutes($endAt);
+
+    if ($durationMinutes < 15) {
+        throw ValidationException::withMessages([
+            'end_time' => 'Shift must be at least 15 minutes long.',
+        ]);
+    }
+
+    if ($durationMinutes > (24 * 60)) {
+        throw ValidationException::withMessages([
+            'end_time' => 'Shift cannot be longer than 24 hours.',
+        ]);
+    }
+
+    return [
+        'start_at' => $startAt,
+        'end_at' => $endAt,
+        'spans_overnight' => ! $endAt->isSameDay($startAt),
+    ];
 }
 
 function care_plan_schema_version(string $planSlug): int
@@ -488,7 +552,19 @@ Route::get('/dashboard', function () {
         })
         ->values();
 
+    $recentJournalEntries = Schema::hasTable('care_journal_entries')
+        ? CareJournalEntry::query()
+            ->with(['patient:id,name,url_key', 'author:id,name,first_name,surname'])
+            ->orderByDesc('recorded_at')
+            ->orderByDesc('id')
+            ->limit(3)
+            ->get()
+            ->map(fn (CareJournalEntry $entry) => map_care_journal_entry($entry))
+            ->values()
+        : collect();
+
     return Inertia::render('Dashboard', [
+        'recentJournalEntries' => $recentJournalEntries,
         'dashboardStats' => [
             'visits' => [
                 'total' => $weeklyVisitsTotal,
@@ -516,6 +592,141 @@ Route::get('/dashboard', function () {
         ],
     ]);
 })->middleware(['auth', 'verified'])->name('dashboard');
+
+if (!function_exists('format_care_journal_author_name')) {
+function format_care_journal_author_name(?User $user): string
+{
+    if ($user === null) {
+        return 'Unknown staff';
+    }
+
+    $fullName = trim((string) ($user->name ?: (($user->first_name ?? '').' '.($user->surname ?? ''))));
+
+    return $fullName !== '' ? $fullName : 'Unknown staff';
+}
+
+function map_care_journal_entry(CareJournalEntry $entry): array
+{
+    $patient = $entry->patient;
+    $author = $entry->author;
+
+    return [
+        'id' => $entry->id,
+        'body' => $entry->body,
+        'recordedAt' => $entry->recorded_at?->toIso8601String(),
+        'recordedAtLabel' => $entry->recorded_at?->format('d M Y, H:i'),
+        'patient' => [
+            'id' => $patient?->id,
+            'name' => $patient?->name ?: 'Unknown patient',
+            'urlKey' => $patient?->url_key,
+        ],
+        'author' => [
+            'id' => $author?->id,
+            'name' => format_care_journal_author_name($author),
+        ],
+    ];
+}
+
+function map_patient_vital(PatientVital $vital): array
+{
+    $recorder = $vital->recordedBy;
+
+    return [
+        'id' => $vital->id,
+        'heartRate' => $vital->heart_rate,
+        'bpSystolic' => $vital->bp_systolic,
+        'spo2' => $vital->spo2,
+        'otherObservation' => $vital->other_observation,
+        'recordedAt' => $vital->recorded_at?->toIso8601String(),
+        'recordedAtLabel' => $vital->recorded_at?->format('d M Y, H:i'),
+        'recordedBy' => [
+            'id' => $recorder?->id,
+            'name' => format_care_journal_author_name($recorder),
+        ],
+    ];
+}
+
+function care_journal_entries_query(Request $request)
+{
+    $user = $request->user();
+    $filter = (string) $request->query('filter', 'all');
+
+    $query = CareJournalEntry::query()
+        ->with(['patient:id,name,url_key', 'author:id,name,first_name,surname'])
+        ->orderByDesc('recorded_at')
+        ->orderByDesc('id');
+
+    if ($filter === 'mine') {
+        $query->where('author_user_id', $user->id);
+    }
+
+    return $query;
+}
+} // care journal helpers
+
+Route::get('/dashboard/journal', function (Request $request) {
+    $filter = (string) $request->query('filter', 'all');
+    if (!in_array($filter, ['all', 'mine'], true)) {
+        $filter = 'all';
+    }
+
+    $entries = care_journal_entries_query($request)
+        ->limit(200)
+        ->get()
+        ->map(fn (CareJournalEntry $entry) => map_care_journal_entry($entry))
+        ->values();
+
+    $patients = Patient::query()
+        ->orderBy('name')
+        ->get(['id', 'name', 'url_key'])
+        ->map(fn ($patient) => [
+            'id' => $patient->id,
+            'name' => $patient->name,
+            'urlKey' => $patient->url_key,
+        ])
+        ->values();
+
+    return Inertia::render('Journal', [
+        'entries' => $entries,
+        'patients' => $patients,
+        'filter' => $filter,
+    ]);
+})->middleware(['auth', 'verified'])->name('journal');
+
+Route::post('/dashboard/journal', function (Request $request) {
+    $filter = (string) $request->input('filter', 'all');
+    if (!in_array($filter, ['all', 'mine'], true)) {
+        $filter = 'all';
+    }
+
+    $validated = $request->validate([
+        'patient_id' => ['required', 'integer', 'exists:patients,id'],
+        'body' => ['required', 'string', 'min:3', 'max:10000'],
+    ]);
+
+    $entry = CareJournalEntry::query()->create([
+        'patient_id' => $validated['patient_id'],
+        'author_user_id' => $request->user()->id,
+        'body' => trim($validated['body']),
+        'recorded_at' => now(),
+    ]);
+
+    $patient = Patient::query()->find($validated['patient_id']);
+    AuditTrail::record(
+        'created',
+        'Recorded daily care note for '.($patient?->name ?? 'patient'),
+        'care_journal',
+        (string) $entry->id,
+        $patient?->name,
+        null,
+        ['patient_url_key' => $patient?->url_key],
+        $request,
+    );
+
+    return redirect()
+        ->route('journal', ['filter' => $filter])
+        ->with('success', 'Daily care note recorded.');
+})->middleware(['auth', 'verified'])->name('journal.store');
 
 Route::get('/schedules', function () {
     $patients = Patient::query()
@@ -558,6 +769,9 @@ Route::get('/schedules', function () {
                 $staffName = 'Unassigned';
             }
 
+            $spansOvernight = $entry->start_at && $entry->end_at
+                && ! $entry->end_at->isSameDay($entry->start_at);
+
             return [
                 'id' => $entry->id,
                 'patientName' => $entry->patient?->name ?? 'Unknown patient',
@@ -567,6 +781,7 @@ Route::get('/schedules', function () {
                 'assignedUserId' => $entry->assigned_user_id,
                 'startAt' => optional($entry->start_at)->toIso8601String(),
                 'endAt' => optional($entry->end_at)->toIso8601String(),
+                'spansOvernight' => $spansOvernight,
                 'purpose' => $entry->purpose,
                 'notes' => $entry->notes,
             ];
@@ -592,26 +807,34 @@ Route::post('/schedules', function () {
     ]);
 
     $patient = Patient::query()->where('url_key', $payload['patient_url_key'])->firstOrFail();
-    $startAt = Carbon::parse($payload['visit_date'].' '.$payload['start_time']);
-    $endAt = Carbon::parse($payload['visit_date'].' '.$payload['end_time']);
-
-    if ($endAt->lessThanOrEqualTo($startAt)) {
-        throw ValidationException::withMessages([
-            'end_time' => 'End time must be after the start time.',
-        ]);
-    }
+    $window = resolve_schedule_window($payload['visit_date'], $payload['start_time'], $payload['end_time']);
 
     $assignedUser = resolve_care_worker_user_or_fail((int) $payload['assigned_user_id']);
 
-    PatientSchedule::query()->create([
+    $schedule = PatientSchedule::query()->create([
         'patient_id' => $patient->id,
         'assigned_user_id' => $assignedUser->id,
-        'start_at' => $startAt,
-        'end_at' => $endAt,
+        'start_at' => $window['start_at'],
+        'end_at' => $window['end_at'],
         'purpose' => $payload['purpose'] ?? null,
         'notes' => $payload['notes'] ?? null,
         'created_by_user_id' => request()->user()?->id,
     ]);
+
+    AuditTrail::record(
+        'created',
+        'Scheduled visit for '.$patient->name,
+        'schedule',
+        (string) $schedule->id,
+        $patient->name,
+        [
+            'visit_date' => $payload['visit_date'],
+            'start_time' => $payload['start_time'],
+            'end_time' => $payload['end_time'],
+            'assigned_user_id' => $assignedUser->id,
+        ],
+        ['patient_url_key' => $patient->url_key],
+    );
 
     return redirect()->route('schedules')->with('success', 'Visit scheduled successfully.');
 })->middleware(['auth', 'verified'])->name('schedules.store');
@@ -626,19 +849,12 @@ Route::patch('/schedules/{schedule}', function (PatientSchedule $schedule) {
     ]);
 
     $patient = Patient::query()->where('url_key', $payload['patient_url_key'])->firstOrFail();
-    $startAt = Carbon::parse($payload['visit_date'].' '.$payload['start_time']);
-    $endAt = Carbon::parse($payload['visit_date'].' '.$payload['end_time']);
-
-    if ($endAt->lessThanOrEqualTo($startAt)) {
-        throw ValidationException::withMessages([
-            'end_time' => 'End time must be after the start time.',
-        ]);
-    }
+    $window = resolve_schedule_window($payload['visit_date'], $payload['start_time'], $payload['end_time']);
 
     $updates = [
         'patient_id' => $patient->id,
-        'start_at' => $startAt,
-        'end_at' => $endAt,
+        'start_at' => $window['start_at'],
+        'end_at' => $window['end_at'],
     ];
 
     // Future-safe: if a reassign action reuses this endpoint, enforce care-worker only.
@@ -646,88 +862,72 @@ Route::patch('/schedules/{schedule}', function (PatientSchedule $schedule) {
         $updates['assigned_user_id'] = resolve_care_worker_user_or_fail((int) $payload['assigned_user_id'])->id;
     }
 
+    $previous = [
+        'start_at' => optional($schedule->start_at)->toIso8601String(),
+        'end_at' => optional($schedule->end_at)->toIso8601String(),
+        'assigned_user_id' => $schedule->assigned_user_id,
+    ];
+
     $schedule->update($updates);
+
+    AuditTrail::record(
+        'updated',
+        'Rescheduled visit for '.$patient->name,
+        'schedule',
+        (string) $schedule->id,
+        $patient->name,
+        [
+            'before' => $previous,
+            'after' => [
+                'start_at' => $window['start_at']->toIso8601String(),
+                'end_at' => $window['end_at']->toIso8601String(),
+                'assigned_user_id' => $updates['assigned_user_id'] ?? $schedule->assigned_user_id,
+            ],
+        ],
+        ['patient_url_key' => $patient->url_key],
+    );
 
     return redirect()->route('schedules')->with('success', 'Schedule updated successfully.');
 })->middleware(['auth', 'verified'])->name('schedules.reschedule');
 
+Route::get('/reports', function () {
+    abort_unless(AuditTrail::canViewReports(request()->user()), 403, 'You do not have permission to view audit reports.');
+
+    $subjectType = request()->query('subject_type');
+    if ($subjectType === 'all' || $subjectType === '') {
+        $subjectType = null;
+    }
+
+    return Inertia::render('ReportsAudit', [
+        'events' => AuditTrail::fetchAuditReportsForUi($subjectType),
+        'filters' => [
+            'subject_type' => request()->query('subject_type', 'all'),
+        ],
+        'subjectTypes' => [
+            ['value' => 'all', 'label' => 'All areas'],
+            ['value' => 'patient', 'label' => 'Patients'],
+            ['value' => 'employee', 'label' => 'Staff'],
+            ['value' => 'schedule', 'label' => 'Schedules'],
+            ['value' => 'care_journal', 'label' => 'Care journal'],
+            ['value' => 'care_plan', 'label' => 'Care plans'],
+            ['value' => 'medication', 'label' => 'eMAR'],
+            ['value' => 'document', 'label' => 'Documents'],
+            ['value' => 'vital', 'label' => 'Observations'],
+            ['value' => 'incident', 'label' => 'Incidents'],
+            ['value' => 'form_snapshot', 'label' => 'Draft forms'],
+        ],
+    ]);
+})->middleware(['auth', 'verified'])->name('reports');
+
 Route::get('/admin/activity-logs', function () {
-    $user = request()->user();
-    $isAdmin = user_has_primary_role($user, ['admin', 'super_admin']);
+    abort_unless(AuditTrail::canViewActivityLog(request()->user()), 403, 'You do not have permission to view activity logs.');
 
-    abort_unless($isAdmin, 403, 'Only admin users can view activity logs.');
-
-    if (Schema::hasTable('user_activity_logs')) {
-        $logs = DB::table('user_activity_logs')
-            ->leftJoin('users', 'users.id', '=', 'user_activity_logs.user_id')
-            ->select([
-                'user_activity_logs.*',
-                'users.name as user_name_field',
-                'users.first_name as user_first_name',
-                'users.surname as user_surname',
-            ])
-            ->orderByDesc('user_activity_logs.id')
-            ->limit(250)
-            ->get()
-            ->map(function ($row) {
-                $fullName = trim((string) (($row->user_first_name ?? '').' '.($row->user_surname ?? '')));
-                if ($fullName === '') {
-                    $fullName = $row->user_name_field ?? null;
-                }
-
-                return [
-                    'id' => $row->id ?? null,
-                    'created_at' => $row->created_at ?? null,
-                    'user_id' => $row->user_id ?? null,
-                    'user_name' => $fullName,
-                    'action' => $row->action ?? null,
-                    'description' => $row->description ?? null,
-                    'path' => $row->path ?? null,
-                    'method' => $row->method ?? null,
-                    'status' => $row->status ?? null,
-                    'ip_address' => $row->ip_address ?? null,
-                ];
-            })
-            ->values();
-
-        return Inertia::render('AdminActivityLogs', [
-            'logs' => $logs,
-            'tableAvailable' => true,
-            'logSource' => 'database',
-        ]);
-    }
-
-    $logs = [];
-    $auditLogPath = storage_path('logs/audit-actions.log');
-    if (File::exists($auditLogPath)) {
-        $lines = preg_split('/\r\n|\r|\n/', File::get($auditLogPath)) ?: [];
-        $recentLines = array_slice(array_values(array_filter($lines)), -250);
-
-        foreach (array_reverse($recentLines) as $line) {
-            $decoded = json_decode($line, true);
-            if (!is_array($decoded)) {
-                continue;
-            }
-
-            $logs[] = [
-                'id' => null,
-                'created_at' => $decoded['timestamp'] ?? null,
-                'user_id' => $decoded['user_id'] ?? null,
-                'user_name' => $decoded['user_name'] ?? null,
-                'action' => $decoded['method'] ?? null,
-                'description' => $decoded['error'] ?? 'Request event',
-                'path' => $decoded['path'] ?? null,
-                'method' => $decoded['method'] ?? null,
-                'status' => $decoded['status'] ?? null,
-                'ip_address' => $decoded['ip'] ?? null,
-            ];
-        }
-    }
+    $hasDatabase = Schema::hasTable('user_activity_logs');
 
     return Inertia::render('AdminActivityLogs', [
-        'logs' => $logs,
-        'tableAvailable' => true,
-        'logSource' => 'audit_file',
+        'logs' => AuditTrail::fetchActivityLogsForUi(),
+        'tableAvailable' => $hasDatabase || File::exists(storage_path('logs/audit-actions.log')),
+        'logSource' => $hasDatabase ? 'database' : 'audit_file',
     ]);
 })->middleware(['auth', 'verified'])->name('admin.activity-logs');
 
@@ -770,7 +970,7 @@ Route::post('/patients', function () {
         'title' => ['required', 'string', 'max:20'],
         'first_name' => ['required', 'string', 'max:255'],
         'last_name' => ['required', 'string', 'max:255'],
-        'date_of_birth' => ['required', 'date'],
+        'date_of_birth' => ['required', 'date', 'before_or_equal:today'],
         'gender' => ['required', 'string', 'max:50'],
         'primary_diagnosis' => ['nullable', 'string', 'max:500'],
         'severe_allergies' => ['nullable', 'string', 'max:500'],
@@ -779,17 +979,17 @@ Route::post('/patients', function () {
         'address_line_1' => ['required', 'string', 'max:255'],
         'city' => ['required', 'string', 'max:255'],
         'postcode' => ['required', 'string', 'max:50'],
-        'phone_number' => ['required', 'string', 'regex:/^07\d{9}$/'],
+        'phone_number' => ['nullable', 'string', 'regex:/^07\d{9}$/'],
         'email_address' => ['required', 'email', 'max:255'],
         'next_of_kin' => ['required', 'string', 'max:255'],
-        'next_of_kin_tel' => ['required', 'string', 'regex:/^07\d{9}$/'],
-        'next_of_kin_email' => ['required', 'email', 'max:255'],
+        'next_of_kin_tel' => ['nullable', 'string', 'regex:/^07\d{9}$/'],
+        'next_of_kin_email' => ['nullable', 'email', 'max:255'],
         'other_relevant_people' => ['nullable', 'string', 'max:1000'],
-        'social_services_number' => ['required', 'string', 'max:100'],
+        'social_services_number' => ['nullable', 'string', 'max:100'],
         'weight_kg' => ['required', 'numeric', 'between:1,500'],
         'height_m' => ['required', 'numeric', 'between:0.3,3'],
         'start_date' => ['required', 'date'],
-        'photo' => ['required', 'image', 'mimes:jpg,jpeg,png', 'max:3072'],
+        'photo' => ['nullable', 'image', 'mimes:jpg,jpeg,png', 'max:3072'],
         'name' => ['required', 'string', 'max:255'],
         'nhs_number' => [
             'required',
@@ -800,8 +1000,10 @@ Route::post('/patients', function () {
         'dob' => ['required', 'string', 'max:50'],
         'allergies' => ['nullable', 'string', 'max:500'],
         'address' => ['required', 'string', 'max:500'],
-        'phone' => ['required', 'string', 'max:100'],
-        'status' => ['required', 'string', 'in:ACTIVE,OVERDUE,ON LEAVE'],
+        'latitude' => ['nullable', 'numeric', 'between:-90,90'],
+        'longitude' => ['nullable', 'numeric', 'between:-180,180'],
+        'phone' => ['nullable', 'string', 'max:100'],
+        'status' => ['required', 'string', 'in:GREEN,AMBER,RED'],
     ]);
 
     $name = trim($payload['name']);
@@ -812,26 +1014,76 @@ Route::post('/patients', function () {
         $urlKey = 'ac-'.str_pad((string) random_int(1, 99999), 5, '0', STR_PAD_LEFT);
     }
 
+    $geocoded = [
+        'latitude' => !empty($payload['latitude']) ? (float) $payload['latitude'] : null,
+        'longitude' => !empty($payload['longitude']) ? (float) $payload['longitude'] : null,
+    ];
+    if (!$geocoded['latitude'] && !empty($payload['address'])) {
+        try {
+            $geoResponse = Http::timeout(5)
+                ->withHeaders(['User-Agent' => 'AlloCare/1.0'])
+                ->get('https://nominatim.openstreetmap.org/search', [
+                    'q' => $payload['address'],
+                    'format' => 'json',
+                    'limit' => 1,
+                    'countrycodes' => 'gb',
+                ]);
+            if ($geoResponse->ok() && !empty($geoResponse->json())) {
+                $geocoded['latitude'] = (float) $geoResponse->json()[0]['lat'];
+                $geocoded['longitude'] = (float) $geoResponse->json()[0]['lon'];
+            }
+        } catch (\Throwable $e) {
+            // Geocoding is best-effort; proceed without coordinates
+        }
+    }
+
     $patient = Patient::query()->create([
         'url_key' => $urlKey,
         'slug' => $slug,
         'name' => $name,
         'reference' => '#'.strtoupper($urlKey),
         'nhs_number' => $payload['nhs_number'] ?: null,
-        'photo_path' => request()->file('photo')->store('patient-photos', 'public'),
+        'photo_path' => request()->hasFile('photo') ? request()->file('photo')->store('patient-photos', 'public') : null,
         'dob' => $payload['dob'] ?: null,
-        'allergies' => $payload['allergies'] ? array_map('trim', explode(',', $payload['allergies'])) : ['None'],
+        'allergies' => ! empty($payload['allergies'] ?? null) ? array_map('trim', explode(',', (string) $payload['allergies'])) : ['None'],
         'address' => $payload['address'] ?: null,
+        'latitude' => $geocoded['latitude'],
+        'longitude' => $geocoded['longitude'],
         'phone' => $payload['phone'] ?: null,
         'status' => $payload['status'],
         'rag_status' => $payload['rag_status'],
         'staffing_ratio' => $payload['staffing_ratio'],
         'next_of_kin' => $payload['next_of_kin'],
-        'next_of_kin_tel' => $payload['next_of_kin_tel'],
-        'next_of_kin_email' => $payload['next_of_kin_email'],
-        'other_relevant_people' => $payload['other_relevant_people'] ?: null,
-        'social_services_number' => $payload['social_services_number'],
+        'next_of_kin_tel' => ($payload['next_of_kin_tel'] ?? null) ?: null,
+        'next_of_kin_email' => ($payload['next_of_kin_email'] ?? null) ?: null,
+        'other_relevant_people' => ($payload['other_relevant_people'] ?? null) ?: null,
+        'social_services_number' => ($payload['social_services_number'] ?? null) ?: null,
         'avatar' => 'bg-slate-300',
+    ]);
+
+    AuditTrail::record(
+        'created',
+        'Registered patient '.$name,
+        'patient',
+        $urlKey,
+        $name,
+        [
+            'nhs_number' => $payload['nhs_number'],
+            'status' => $payload['status'],
+            'rag_status' => $payload['rag_status'],
+            'address' => $payload['address'],
+            'latitude' => $geocoded['latitude'],
+            'longitude' => $geocoded['longitude'],
+        ],
+    );
+
+    \Illuminate\Support\Facades\Log::info('Patient registered', [
+        'patient_id' => $patient->id,
+        'url_key' => $urlKey,
+        'name' => $name,
+        'address' => $payload['address'],
+        'latitude' => $geocoded['latitude'],
+        'longitude' => $geocoded['longitude'],
     ]);
 
     return redirect()->route('patients')->with('success', 'Patient created successfully.');
@@ -940,6 +1192,41 @@ Route::get('/patients/{patient}', function (string $patient) {
         ] : null,
     ]);
 })->middleware(['auth', 'verified'])->name('patients.show');
+
+Route::get('/patients/{patient}/observations', function (string $patient) {
+    $record = Patient::query()->where('url_key', $patient)->firstOrFail();
+
+    $latestVitals = PatientVital::query()
+        ->where('patient_id', $record->id)
+        ->orderByDesc('recorded_at')
+        ->orderByDesc('id')
+        ->first();
+
+    $observations = PatientVital::query()
+        ->where('patient_id', $record->id)
+        ->with(['recordedBy:id,name,first_name,surname'])
+        ->orderByDesc('recorded_at')
+        ->orderByDesc('id')
+        ->limit(200)
+        ->get()
+        ->map(fn (PatientVital $vital) => map_patient_vital($vital))
+        ->values();
+
+    return Inertia::render('PatientObservations', [
+        'patientSlug' => $patient,
+        'patient' => [
+            'name' => $record->name,
+            'ragStatus' => $record->rag_status,
+        ],
+        'observations' => $observations,
+        'latestVitals' => $latestVitals ? [
+            'heartRate' => $latestVitals->heart_rate,
+            'bpSystolic' => $latestVitals->bp_systolic,
+            'spo2' => $latestVitals->spo2,
+            'recordedAt' => optional($latestVitals->recorded_at ?? $latestVitals->created_at)->toIso8601String(),
+        ] : null,
+    ]);
+})->middleware(['auth', 'verified'])->name('patients.observations');
 
 Route::get('/patients/{patient}/care-plans', function (string $patient) {
     $record = Patient::query()->where('url_key', $patient)->firstOrFail();
@@ -1069,6 +1356,17 @@ Route::post('/patients/{patient}/care-plans/{plan}', function (string $patient, 
         );
     });
 
+    $record = Patient::query()->where('url_key', $patient)->first();
+    AuditTrail::record(
+        'updated',
+        'Saved care plan "'.$plan.'" for '.($record?->name ?? $patient),
+        'care_plan',
+        $patient.':'.$plan,
+        $record?->name,
+        ['status' => $status, 'plan_slug' => $plan],
+        ['patient_url_key' => $patient],
+    );
+
     return redirect()->back()->with('success', 'Care plan saved successfully.');
 })->middleware(['auth', 'verified'])->name('patients.careplans.save');
 
@@ -1190,6 +1488,16 @@ Route::post('/patients/{patient}/mar/{mar}', function (string $patient, string $
         ]);
     }
 
+    AuditTrail::record(
+        'updated',
+        'Recorded eMAR administrations for '.$patientRecord->name,
+        'medication',
+        $patient.':'.$mar,
+        $patientRecord->name,
+        ['row_count' => count($payload['rows'])],
+        ['patient_url_key' => $patient],
+    );
+
     return redirect()->back()->with('success', 'eMAR saved successfully.');
 })->middleware(['auth', 'verified'])->name('patients.mar.save');
 
@@ -1239,15 +1547,46 @@ Route::post('/patients/{patient}/documents/{document}', function (string $patien
         ],
     );
 
+    $record = Patient::query()->where('url_key', $patient)->first();
+    AuditTrail::record(
+        'updated',
+        'Saved document "'.$document.'" for '.($record?->name ?? $patient),
+        'document',
+        $patient.':'.$document,
+        $record?->name,
+        null,
+        ['patient_url_key' => $patient],
+    );
+
     return redirect()->back()->with('success', 'Document saved successfully.');
 })->middleware(['auth', 'verified'])->name('patients.documents.save');
 
 Route::get('/patients/{patient}/incidents/create', function (string $patient) {
+    $record = Patient::query()->where('url_key', $patient)->firstOrFail();
     $snapshot = FormSnapshot::query()->where('form_key', "incident:{$patient}")->first();
+
+    $snapshotData = $snapshot?->data ?? [];
+    $alreadySubmitted = ($snapshotData['status'] ?? null) === 'Submitted';
+
+    $user = request()->user();
+    $reporterName = trim((string) (($user->first_name ?? '').' '.($user->surname ?? '')));
+    if ($reporterName === '') {
+        $reporterName = $user->name ?? '';
+    }
+
     return Inertia::render('IncidentReport', [
         'patientSlug' => $patient,
-        'incidentStatus' => 'new',
-        'initialSnapshot' => $snapshot?->data ?? [],
+        'incidentStatus' => $alreadySubmitted ? 'new' : ($snapshot ? 'draft' : 'new'),
+        'initialSnapshot' => $alreadySubmitted ? [] : $snapshotData,
+        'patientData' => [
+            'name' => $record->name,
+            'reference' => $record->reference ?? '#'.strtoupper($record->url_key),
+            'dob' => $record->dob ?? 'Not available',
+            'address' => $record->address ?? 'Not available',
+            'allergies' => is_array($record->allergies) ? $record->allergies : [],
+            'status' => $record->status,
+        ],
+        'reporterName' => $reporterName,
     ]);
 })->middleware(['auth', 'verified'])->name('patients.incidents.create');
 
@@ -1301,6 +1640,8 @@ Route::get('/patients/{patient}/shift-check-in', function (string $patient) {
         'patientContext' => [
             'name' => $patientRecord->name,
             'location' => $patientRecord->address ?: 'Location not provided',
+            'latitude' => $patientRecord->latitude ? (float) $patientRecord->latitude : null,
+            'longitude' => $patientRecord->longitude ? (float) $patientRecord->longitude : null,
             'scheduledStartAt' => $nextVisit?->start_at?->toIso8601String(),
             'scheduledEndAt' => $nextVisit?->end_at?->toIso8601String(),
             'scheduledWindow' => $nextVisit
@@ -1323,44 +1664,65 @@ Route::post('/patients/{patient}/vitals', function (string $patient) {
         'heart_rate' => ['required', 'integer', 'between:20,260'],
         'bp_systolic' => ['required', 'integer', 'between:40,300'],
         'spo2' => ['required', 'integer', 'between:50,100'],
+        'other_observation' => ['nullable', 'string', 'max:5000'],
     ]);
 
-    PatientVital::query()->create([
+    $otherObservation = trim((string) ($payload['other_observation'] ?? ''));
+
+    $vital = PatientVital::query()->create([
         'patient_id' => $patientRecord->id,
         'heart_rate' => (int) $payload['heart_rate'],
         'bp_systolic' => (int) $payload['bp_systolic'],
         'spo2' => (int) $payload['spo2'],
+        'other_observation' => $otherObservation !== '' ? $otherObservation : null,
         'recorded_at' => now(),
         'recorded_by_user_id' => request()->user()?->id,
     ]);
 
-    return redirect()->back()->with('success', 'Vitals recorded successfully.');
+    AuditTrail::record(
+        'created',
+        'Recorded clinical observation for '.$patientRecord->name,
+        'vital',
+        (string) $vital->id,
+        $patientRecord->name,
+        [
+            'heart_rate' => $vital->heart_rate,
+            'bp_systolic' => $vital->bp_systolic,
+            'spo2' => $vital->spo2,
+        ],
+        ['patient_url_key' => $patient],
+    );
+
+    return redirect()->back()->with('success', 'Clinical observation recorded successfully.');
 })->middleware(['auth', 'verified'])->name('patients.vitals.store');
 
 Route::get('/patients/{patient}/logs', function (string $patient) {
-    $user = request()->user();
-    $isAdmin = user_has_primary_role($user, ['admin', 'super_admin']);
+    abort_unless(AuditTrail::canViewReports(request()->user()), 403, 'You do not have permission to view audit history.');
 
-    abort_unless($isAdmin, 403, 'Only admin users can view logs.');
+    $record = Patient::query()->where('url_key', $patient)->firstOrFail();
 
-    $logPath = storage_path('logs/audit-actions.log');
-    $entries = [];
-
-    if (File::exists($logPath)) {
-        $lines = preg_split('/\r\n|\r|\n/', File::get($logPath)) ?: [];
-        $recentLines = array_slice(array_values(array_filter($lines)), -500);
-
-        foreach (array_reverse($recentLines) as $line) {
-            $decoded = json_decode($line, true);
-            if (is_array($decoded)) {
-                $entries[] = $decoded;
-            }
-        }
+    $events = [];
+    if (Schema::hasTable('audit_events')) {
+        $events = AuditEvent::query()
+            ->where(function ($query) use ($patient) {
+                $query
+                    ->where(function ($scoped) use ($patient) {
+                        $scoped->where('subject_type', 'patient')->where('subject_key', $patient);
+                    })
+                    ->orWhere('metadata->patient_url_key', $patient);
+            })
+            ->orderByDesc('id')
+            ->limit(250)
+            ->get()
+            ->map(fn (AuditEvent $event) => AuditTrail::mapForUi($event))
+            ->values()
+            ->all();
     }
 
     return Inertia::render('PatientLogs', [
         'patientSlug' => $patient,
-        'logs' => $entries,
+        'patientName' => $record->name,
+        'events' => $events,
     ]);
 })->middleware(['auth', 'verified'])->name('patients.logs');
 
@@ -1446,9 +1808,23 @@ Route::patch('/employees/{user}/account-status', function (User $user) {
         'account_status' => ['required', 'string', 'in:active,inactive'],
     ]);
 
+    $previousStatus = $user->account_status;
     $user->update([
         'account_status' => $payload['account_status'],
     ]);
+
+    $employeeName = AuditTrail::actorName($user) ?? 'Employee #'.$user->id;
+    AuditTrail::record(
+        'updated',
+        'Changed account status for '.$employeeName,
+        'employee',
+        (string) $user->id,
+        $employeeName,
+        [
+            'before' => ['account_status' => $previousStatus],
+            'after' => ['account_status' => $payload['account_status']],
+        ],
+    );
 
     return redirect()->route('employees')->with('success', 'Employee account status updated.');
 })->middleware(['auth', 'verified'])->name('employees.account-status');
@@ -1486,33 +1862,12 @@ Route::post('/employees', function () {
 
     $fullName = trim(($payload['first_name'] ?? '').' '.($payload['surname'] ?? ''));
 
-    $normalizedDateOfBirth = null;
-    $rawDateOfBirth = trim((string) ($payload['date_of_birth'] ?? ''));
-    if ($rawDateOfBirth !== '') {
-        $acceptedFormats = ['d/m/Y', 'Y-m-d'];
-        foreach ($acceptedFormats as $format) {
-            try {
-                $parsedDate = Carbon::createFromFormat($format, $rawDateOfBirth);
-                if ($parsedDate !== false && $parsedDate->format($format) === $rawDateOfBirth) {
-                    $normalizedDateOfBirth = $parsedDate->format('Y-m-d');
-                    break;
-                }
-            } catch (\Throwable $e) {
-                // Try the next accepted format.
-            }
-        }
+    $normalizedDateOfBirth = normalize_employee_date_of_birth($payload['date_of_birth'] ?? null);
 
-        if ($normalizedDateOfBirth === null) {
-            throw ValidationException::withMessages([
-                'date_of_birth' => 'Use DD/MM/YYYY or YYYY-MM-DD for date of birth.',
-            ]);
-        }
-    }
-
-    User::query()->create([
+    $employee = User::query()->create([
         'name' => $fullName,
         'email' => $payload['email'],
-        'password' => Hash::make($payload['password']),
+        'password' => $payload['password'],
         'title' => $payload['title'] ?? null,
         'first_name' => $payload['first_name'],
         'surname' => $payload['surname'],
@@ -1523,9 +1878,24 @@ Route::post('/employees', function () {
         'city' => $payload['city'] ?? null,
         'postcode' => $payload['postcode'] ?? null,
         'primary_role' => $payload['primary_role'] ?? null,
+        'account_status' => 'active',
         'photo_path' => request()->hasFile('photo') ? request()->file('photo')->store('employee-photos', 'public') : null,
         'mfa_enabled' => array_key_exists('mfa_enabled', $payload) ? (bool) $payload['mfa_enabled'] : false,
+        'email_verified_at' => now(),
     ]);
+
+    AuditTrail::record(
+        'created',
+        'Enrolled staff member '.$fullName,
+        'employee',
+        (string) $employee->id,
+        $fullName,
+        [
+            'email' => $payload['email'],
+            'primary_role' => $payload['primary_role'] ?? null,
+            'username' => $payload['username'],
+        ],
+    );
 
     FormSnapshot::query()->where('form_key', 'employee-create')->delete();
 
@@ -1545,12 +1915,275 @@ Route::post('/form-snapshots/{formKey}', function (string $formKey) {
         ],
     );
 
+    $patientUrlKey = null;
+    if (str_contains($formKey, ':')) {
+        [, $patientUrlKey] = explode(':', $formKey, 2);
+    }
+
+    $isIncident = str_starts_with($formKey, 'incident:');
+    $isSubmitted = ($payload['data']['status'] ?? null) === 'Submitted';
+
+    if ($isIncident && $patientUrlKey) {
+        $patientName = Patient::query()->where('url_key', $patientUrlKey)->value('name') ?? $patientUrlKey;
+        $description = $isSubmitted
+            ? "Incident reported for {$patientName}"
+            : "Incident draft saved for {$patientName}";
+        $subjectLabel = $patientName;
+    } else {
+        $description = 'Saved draft for '.$formKey;
+        $subjectLabel = $formKey;
+    }
+
+    AuditTrail::record(
+        $isIncident && $isSubmitted ? 'created' : 'saved',
+        $description,
+        $isIncident ? 'incident' : 'form_snapshot',
+        $formKey,
+        $subjectLabel,
+        null,
+        $patientUrlKey ? ['patient_url_key' => $patientUrlKey] : null,
+    );
+
     return redirect()->back();
 })->middleware(['auth', 'verified'])->name('form-snapshots.save');
 
 Route::get('/team', function () {
     return redirect()->route('employees');
 })->middleware(['auth', 'verified'])->name('team');
+
+Route::get('/reports/schedules', function () {
+    if (!AuditTrail::canViewReports(request()->user())) {
+        abort(403);
+    }
+
+    $fromParam = request('from');
+    $toParam = request('to');
+    $from = $fromParam ? Carbon::parse($fromParam)->startOfDay() : now()->subDays(30)->startOfDay();
+    $to = $toParam ? Carbon::parse($toParam)->endOfDay() : now()->endOfDay();
+
+    $schedules = PatientSchedule::query()
+        ->whereBetween('start_at', [$from, $to])
+        ->with(['patient:id,name,url_key', 'assignedUser:id,name'])
+        ->orderBy('start_at')
+        ->get();
+
+    $totalShifts = $schedules->count();
+    $completedShifts = $schedules->filter(fn ($s) => $s->end_at->isPast())->count();
+    $upcomingShifts = $schedules->filter(fn ($s) => $s->start_at->isFuture())->count();
+    $inProgressShifts = $totalShifts - $completedShifts - $upcomingShifts;
+
+    $rescheduledCount = AuditEvent::query()
+        ->where('subject_type', 'schedule')
+        ->where('action', 'updated')
+        ->whereBetween('created_at', [$from, $to])
+        ->count();
+
+    $totalHours = $schedules->sum(function ($s) {
+        return $s->start_at->diffInMinutes($s->end_at) / 60;
+    });
+
+    $byStaff = $schedules->groupBy('assigned_user_id')->map(function ($group) {
+        $user = $group->first()->assignedUser;
+        $hours = $group->sum(fn ($s) => $s->start_at->diffInMinutes($s->end_at) / 60);
+        return [
+            'name' => $user?->name ?? 'Unassigned',
+            'shifts' => $group->count(),
+            'hours' => round($hours, 1),
+        ];
+    })->sortByDesc('shifts')->values();
+
+    $recentShifts = $schedules->map(function ($s) {
+        return [
+            'id' => $s->id,
+            'patient' => $s->patient?->name ?? '-',
+            'carer' => $s->assignedUser?->name ?? '-',
+            'date' => $s->start_at->format('d M Y'),
+            'time' => $s->start_at->format('H:i').' - '.$s->end_at->format('H:i'),
+            'hours' => round($s->start_at->diffInMinutes($s->end_at) / 60, 1),
+            'status' => $s->end_at->isPast() ? 'Completed' : ($s->start_at->isFuture() ? 'Upcoming' : 'In Progress'),
+        ];
+    })->values();
+
+    return Inertia::render('ReportsSchedules', [
+        'stats' => [
+            'totalShifts' => $totalShifts,
+            'completedShifts' => $completedShifts,
+            'upcomingShifts' => $upcomingShifts,
+            'inProgressShifts' => $inProgressShifts,
+            'rescheduledShifts' => $rescheduledCount,
+            'totalHours' => round($totalHours, 1),
+        ],
+        'byStaff' => $byStaff,
+        'shifts' => $recentShifts,
+        'filters' => [
+            'from' => $from->format('Y-m-d'),
+            'to' => $to->format('Y-m-d'),
+        ],
+    ]);
+})->middleware(['auth', 'verified'])->name('reports.schedules');
+
+Route::get('/reports/incidents', function () {
+    if (!AuditTrail::canViewReports(request()->user())) {
+        abort(403);
+    }
+
+    $incidents = FormSnapshot::query()
+        ->where('form_key', 'like', 'incident:%')
+        ->orderByDesc('updated_at')
+        ->get()
+        ->map(function ($snapshot) {
+            $data = $snapshot->data ?? [];
+            $patientUrlKey = str_replace('incident:', '', $snapshot->form_key);
+            $patient = Patient::query()->where('url_key', $patientUrlKey)->first();
+            $reporter = $snapshot->updated_by_user_id
+                ? User::find($snapshot->updated_by_user_id)
+                : null;
+
+            return [
+                'id' => $snapshot->id,
+                'title' => $data['incidentTitle'] ?? '-',
+                'patient_name' => $patient?->name ?? $patientUrlKey,
+                'patient_url_key' => $patientUrlKey,
+                'reporter' => $reporter?->name ?? ($data['reporterName'] ?? 'Unknown'),
+                'incident_date' => $data['incidentDate'] ?? $snapshot->updated_at->format('Y-m-d'),
+                'incident_time' => $data['incidentTime'] ?? '-',
+                'location' => $data['location'] ?? '-',
+                'tags' => $data['tags'] ?? ($data['selectedTags'] ?? []),
+                'status' => $data['status'] ?? 'Submitted',
+                'duration_minutes' => $data['durationMinutes'] ?? ($data['incidentDuration'] ?? null),
+                'submitted_at' => $snapshot->updated_at->format('d M Y H:i'),
+            ];
+        });
+
+    $totalIncidents = $incidents->count();
+    $submittedCount = $incidents->where('status', 'Submitted')->count();
+    $draftCount = $totalIncidents - $submittedCount;
+    $byPatient = $incidents->groupBy('patient_name')->map->count()->sortByDesc(fn ($v) => $v);
+
+    return Inertia::render('ReportsIncidents', [
+        'incidents' => $incidents->values(),
+        'stats' => [
+            'total' => $totalIncidents,
+            'submitted' => $submittedCount,
+            'drafts' => $draftCount,
+            'byPatient' => $byPatient,
+        ],
+    ]);
+})->middleware(['auth', 'verified'])->name('reports.incidents');
+
+Route::get('/reports/incidents/{id}', function (int $id) {
+    if (!AuditTrail::canViewReports(request()->user())) {
+        abort(403);
+    }
+
+    $snapshot = FormSnapshot::query()->findOrFail($id);
+    $data = $snapshot->data ?? [];
+    $patientUrlKey = str_replace('incident:', '', $snapshot->form_key);
+    $patient = Patient::query()->where('url_key', $patientUrlKey)->first();
+    $reporter = $snapshot->updated_by_user_id
+        ? User::find($snapshot->updated_by_user_id)
+        : null;
+
+    return Inertia::render('ReportsIncidentView', [
+        'incident' => [
+            'id' => $snapshot->id,
+            'form_key' => $snapshot->form_key,
+            'title' => $data['incidentTitle'] ?? '-',
+            'patient_name' => $patient?->name ?? $patientUrlKey,
+            'patient_url_key' => $patientUrlKey,
+            'patient_dob' => $patient?->date_of_birth ?? '-',
+            'patient_address' => $patient?->address ?? '-',
+            'reporter' => $data['reporterName'] ?? ($reporter?->name ?? 'Unknown'),
+            'incident_date' => $data['incidentDate'] ?? '-',
+            'incident_time' => $data['incidentTime'] ?? '-',
+            'location' => $data['location'] ?? '-',
+            'antecedent' => $data['antecedent'] ?? '-',
+            'behaviour' => $data['behaviour'] ?? '-',
+            'consequence' => $data['consequence'] ?? '-',
+            'immediate_outcome' => $data['immediateOutcome'] ?? '-',
+            'lessons_learnt' => $data['lessonsLearnt'] ?? '-',
+            'new_triggers' => $data['newTriggers'] ?? '-',
+            'actions_planned' => $data['actionsPlanned'] ?? '-',
+            'tags' => $data['selectedTags'] ?? [],
+            'impacts' => $data['selectedImpacts'] ?? [],
+            'duration_minutes' => $data['incidentDuration'] ?? null,
+            'staff_members' => $data['staffMembers'] ?? [],
+            'manager_name' => $data['managerName'] ?? '-',
+            'manager_sign_off' => $data['managerSignOff'] ?? false,
+            'status' => $data['status'] ?? 'Draft',
+            'submitted_at' => $snapshot->updated_at->format('d M Y H:i'),
+        ],
+    ]);
+})->middleware(['auth', 'verified'])->name('reports.incidents.show');
+
+Route::get('/api/postcode-lookup/{postcode}', function (string $postcode) {
+    $postcode = strtoupper(trim(str_replace(' ', '', $postcode)));
+    if (!preg_match('/^[A-Z]{1,2}\d[A-Z\d]?\d[A-Z]{2}$/', $postcode)) {
+        return response()->json(['error' => 'Invalid UK postcode format.'], 422);
+    }
+
+    $formatted = strlen($postcode) > 4
+        ? substr($postcode, 0, -3).' '.substr($postcode, -3)
+        : $postcode;
+
+    $apiKey = config('services.ideal_postcodes.api_key', 'ak_test');
+
+    try {
+        $response = Http::timeout(5)->get("https://api.ideal-postcodes.co.uk/v1/postcodes/{$postcode}", [
+            'api_key' => $apiKey,
+        ]);
+        if ($response->ok()) {
+            $results = $response->json()['result'] ?? [];
+            $addresses = collect($results)->map(function ($addr) use ($formatted) {
+                $line1 = trim(implode(', ', array_filter([
+                    $addr['line_1'] ?? '',
+                    $addr['line_2'] ?? '',
+                    $addr['line_3'] ?? '',
+                ])), ', ');
+                $city = $addr['post_town'] ?? '';
+                return [
+                    'label' => implode(', ', array_filter([$line1, $city, $formatted])),
+                    'address_line_1' => $line1,
+                    'city' => $city,
+                    'postcode' => $formatted,
+                    'latitude' => $addr['latitude'] ?? null,
+                    'longitude' => $addr['longitude'] ?? null,
+                ];
+            })->values();
+            return response()->json(['addresses' => $addresses]);
+        }
+    } catch (\Throwable $e) {
+        // fall through to postcodes.io
+    }
+
+    try {
+        $response = Http::timeout(5)
+            ->withHeaders(['User-Agent' => 'AlloCare/1.0'])
+            ->get("https://api.postcodes.io/postcodes/{$formatted}");
+        if ($response->ok()) {
+            $result = $response->json()['result'] ?? [];
+            $label = implode(', ', array_filter([
+                $result['admin_ward'] ?? '',
+                $result['admin_district'] ?? '',
+                $formatted,
+            ]));
+            return response()->json([
+                'addresses' => [[
+                    'label' => $label,
+                    'address_line_1' => '',
+                    'city' => $result['admin_district'] ?? '',
+                    'postcode' => $formatted,
+                    'latitude' => $result['latitude'] ?? null,
+                    'longitude' => $result['longitude'] ?? null,
+                ]],
+                'manual_entry_needed' => true,
+            ]);
+        }
+        return response()->json(['error' => 'Postcode not found.'], 404);
+    } catch (\Throwable $e) {
+        return response()->json(['error' => 'Unable to verify postcode. Please try again.'], 503);
+    }
+})->middleware(['auth', 'verified'])->name('api.postcode-lookup');
 
 Route::middleware('auth')->group(function () {
     Route::get('/profile', [ProfileController::class, 'edit'])->name('profile.edit');

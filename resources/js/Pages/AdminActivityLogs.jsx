@@ -1,15 +1,7 @@
 import { Head, Link } from '@inertiajs/react';
-import ApplicationLogo from '@/Components/ApplicationLogo';
+import DashboardSidebar from '@/Components/DashboardSidebar';
+import AppHeaderNav from '@/Components/AppHeaderNav';
 import ProfileMenu from '@/Components/ProfileMenu';
-
-const navItems = [
-    { label: 'Overview', href: route('dashboard') },
-    { label: 'Journal' },
-    { label: 'Care Alerts' },
-    { label: 'Analytics' },
-    { label: 'Employees', href: route('employees') },
-    { label: 'Activity Logs', href: route('admin.activity-logs') },
-];
 
 export default function AdminActivityLogs({ logs = [], tableAvailable = true, logSource = 'database' }) {
     return (
@@ -18,63 +10,11 @@ export default function AdminActivityLogs({ logs = [], tableAvailable = true, lo
 
             <div className="min-h-screen bg-slate-100 text-slate-700">
                 <div className="flex w-full">
-                    <aside className="hidden min-h-screen w-64 border-r border-slate-200 bg-slate-50 px-5 py-8 lg:flex lg:flex-col">
-                        <div className="mb-10">
-                            <div className="mb-3">
-                                <Link href={route('dashboard')}>
-                                    <ApplicationLogo className="block w-full" />
-                                </Link>
-                            </div>
-                            <p className="text-xs uppercase tracking-[0.2em] text-slate-400">Admin Console</p>
-                        </div>
-
-                        <nav className="space-y-2">
-                            {navItems.map((item) =>
-                                item.href ? (
-                                    <Link
-                                        key={item.label}
-                                        href={item.href}
-                                        className={`block w-full rounded-xl px-4 py-3 text-left text-sm font-medium ${
-                                            item.label === 'Activity Logs' ? 'bg-emerald-50 text-emerald-700' : 'text-slate-600 hover:bg-slate-100'
-                                        }`}
-                                    >
-                                        {item.label}
-                                    </Link>
-                                ) : (
-                                    <button
-                                        key={item.label}
-                                        type="button"
-                                        className="w-full rounded-xl px-4 py-3 text-left text-sm font-medium text-slate-600 hover:bg-slate-100"
-                                    >
-                                        {item.label}
-                                    </button>
-                                ),
-                            )}
-                        </nav>
-
-                        <div className="mt-auto space-y-2">
-                            <button type="button" className="w-full rounded-xl bg-white px-4 py-3 text-left text-sm font-medium text-slate-600">
-                                Insights
-                            </button>
-                            <button type="button" className="w-full rounded-xl px-4 py-3 text-left text-sm text-slate-500">
-                                Help
-                            </button>
-                            <button type="button" className="w-full rounded-xl px-4 py-3 text-left text-sm text-slate-500">
-                                Sign out
-                            </button>
-                        </div>
-                    </aside>
+                    <DashboardSidebar active="activity_logs" subtitle="Admin Console" />
 
                     <main className="flex-1 p-4 sm:p-6 lg:p-8">
                         <header className="mb-6 flex flex-wrap items-center justify-between gap-4 rounded-2xl bg-white px-5 py-4">
-                            <div className="flex items-center gap-6 text-sm font-medium text-slate-600">
-                                <Link href={route('patients')} className="hover:text-slate-900">
-                                    Patients
-                                </Link>
-                                <span>Schedules</span>
-                                <span>Reports</span>
-                                <span>Inventory</span>
-                            </div>
+                            <AppHeaderNav />
                             <div className="flex items-center gap-3">
                                 <ProfileMenu />
                             </div>
@@ -94,20 +34,15 @@ export default function AdminActivityLogs({ logs = [], tableAvailable = true, lo
                             <div>
                                 <h1 className="text-2xl font-semibold text-slate-900">User Activity Logs</h1>
                                 <p className="text-sm text-slate-500">
-                                    Latest entries from {logSource === 'database' ? '`user_activity_logs`.' : '`storage/logs/audit-actions.log` (fallback).'}
+                                    Every page request and system action — who accessed what, when, and how long it took.
                                 </p>
                             </div>
                         </section>
 
                         <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-                            {logSource === 'audit_file' && (
-                                <p className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
-                                    `user_activity_logs` is unavailable here, so this view is using audit log fallback data.
-                                </p>
-                            )}
                             {!tableAvailable ? (
                                 <p className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
-                                    The `user_activity_logs` table is not available in this environment.
+                                    Activity log storage is not available. Run database migrations to enable full request logging.
                                 </p>
                             ) : (
                                 <div className="overflow-x-auto">
@@ -121,13 +56,14 @@ export default function AdminActivityLogs({ logs = [], tableAvailable = true, lo
                                                 <th className="border border-slate-200 px-3 py-2">Method</th>
                                                 <th className="border border-slate-200 px-3 py-2">Path</th>
                                                 <th className="border border-slate-200 px-3 py-2">Status</th>
+                                                <th className="border border-slate-200 px-3 py-2">Duration (ms)</th>
                                                 <th className="border border-slate-200 px-3 py-2">IP Address</th>
                                             </tr>
                                         </thead>
                                         <tbody>
                                             {logs.length === 0 ? (
                                                 <tr>
-                                                    <td colSpan={8} className="border border-slate-200 px-3 py-6 text-center text-slate-500">
+                                                    <td colSpan={9} className="border border-slate-200 px-3 py-6 text-center text-slate-500">
                                                         No activity log entries found.
                                                     </td>
                                                 </tr>
@@ -141,6 +77,7 @@ export default function AdminActivityLogs({ logs = [], tableAvailable = true, lo
                                                         <td className="border border-slate-200 px-3 py-2">{log.method || '-'}</td>
                                                         <td className="border border-slate-200 px-3 py-2 font-mono text-xs">{log.path || '-'}</td>
                                                         <td className="border border-slate-200 px-3 py-2">{log.status ?? '-'}</td>
+                                                        <td className="border border-slate-200 px-3 py-2">{log.duration_ms ?? '-'}</td>
                                                         <td className="border border-slate-200 px-3 py-2">{log.ip_address || '-'}</td>
                                                     </tr>
                                                 ))

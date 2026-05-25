@@ -1,19 +1,7 @@
 import { Head, Link } from '@inertiajs/react';
-import ApplicationLogo from '@/Components/ApplicationLogo';
+import PatientRecordSidebar from '@/Components/PatientRecordSidebar';
+import AppHeaderNav from '@/Components/AppHeaderNav';
 import ProfileMenu from '@/Components/ProfileMenu';
-
-const sideTabs = [
-    { label: 'Overview', key: 'overview' },
-    { label: 'Care Plans', key: 'care_plans' },
-    { label: 'Risk Assessment', key: 'risk_assessment' },
-    { label: 'eMAR', key: 'medication' },
-    { label: 'Observations', key: 'observations' },
-    { label: 'Documents', key: 'documents' },
-    { label: 'Notes', key: 'notes' },
-    { label: 'Logs', key: 'logs' },
-    { label: 'Contacts', key: 'contacts' },
-    // { label: 'Alerts', key: 'alerts' },
-];
 
 export default function PatientContacts({ patientSlug = 'sarah-jenkins', patientContactData = null }) {
     const contacts = patientContactData || {
@@ -40,39 +28,11 @@ export default function PatientContacts({ patientSlug = 'sarah-jenkins', patient
             <Head title="Patient Contacts" />
             <div className="min-h-screen bg-slate-100 text-slate-700">
                 <div className="flex w-full">
-                    <aside className="hidden min-h-screen w-64 border-r border-slate-200 bg-slate-50 px-5 py-6 lg:flex lg:flex-col">
-                        <div className="mb-5">
-                            <Link href={route('dashboard')}>
-                                <ApplicationLogo className="mb-3 block w-full" />
-                            </Link>
-                            <div className="rounded-xl border border-slate-200 bg-white p-3">
-                                <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Patient Record</p>
-                            </div>
-                        </div>
-                        <nav className="space-y-1.5">
-                            {sideTabs.map((tab) => {
-                                const isActive = tab.key === 'contacts';
-                                const classes = `block w-full rounded-lg px-3 py-2.5 text-left text-sm font-medium ${isActive ? 'bg-emerald-50 text-emerald-700' : 'text-slate-600 hover:bg-slate-100'}`;
-                                if (tab.key === 'overview') return <Link key={tab.key} href={route('patients.show', patientSlug)} className={classes}>{tab.label}</Link>;
-                                if (tab.key === 'care_plans') return <Link key={tab.key} href={route('patients.careplans', patientSlug)} className={classes}>{tab.label}</Link>;
-                                if (tab.key === 'risk_assessment') return <Link key={tab.key} href={route('patients.risks', patientSlug)} className={classes}>{tab.label}</Link>;
-                                if (tab.key === 'medication') return <Link key={tab.key} href={route('patients.mar', patientSlug)} className={classes}>{tab.label}</Link>;
-                                if (tab.key === 'documents') return <Link key={tab.key} href={route('patients.documents', patientSlug)} className={classes}>{tab.label}</Link>;
-                                if (tab.key === 'logs') return <Link key={tab.key} href={route('patients.logs', patientSlug)} className={classes}>{tab.label}</Link>;
-                                if (tab.key === 'contacts') return <Link key={tab.key} href={route('patients.contacts', patientSlug)} className={classes}>{tab.label}</Link>;
-                                return <button key={tab.key} type="button" className={classes}>{tab.label}</button>;
-                            })}
-                        </nav>
-                    </aside>
+                    <PatientRecordSidebar patientSlug={patientSlug} active="contacts" />
 
                     <main className="flex-1 p-4 sm:p-6 lg:p-8">
                         <header className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-2xl bg-white px-5 py-3">
-                            <div className="flex items-center gap-6 text-sm font-medium text-slate-600">
-                                <Link href={route('dashboard')} className="hover:text-slate-900">Dashboard</Link>
-                                <Link href={route('patients')} className="text-slate-900">Patients</Link>
-                                <span>Schedules</span>
-                                <span>Reports</span>
-                            </div>
+                            <AppHeaderNav active="patients" />
                             <ProfileMenu />
                         </header>
 
