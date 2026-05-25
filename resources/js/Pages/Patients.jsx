@@ -10,12 +10,16 @@ function getFirstName(value) {
 }
 
 function badgeClasses(status) {
-    if (status === 'ACTIVE') {
+    if (status === 'GREEN') {
         return 'bg-emerald-100 text-emerald-700';
     }
 
-    if (status === 'OVERDUE') {
+    if (status === 'RED') {
         return 'bg-red-100 text-red-700';
+    }
+
+    if (status === 'AMBER') {
+        return 'bg-amber-100 text-amber-700';
     }
 
     return 'bg-slate-200 text-slate-600';
@@ -97,7 +101,7 @@ export default function Patients({ patients: dbPatients = [] }) {
                             <header className="mb-5 flex flex-wrap items-end justify-between gap-3">
                                 <div>
                                     {/* <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Portfolio</p> */}
-                                    <h1 className="text-4xl font-bold tracking-tight text-slate-900">Client Directory</h1>
+                                    <h1 className="text-4xl font-bold tracking-tight text-slate-900">Patient Directory</h1>
                                 </div>
                                 <Link
                                     href={route('patients.create')}

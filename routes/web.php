@@ -913,6 +913,7 @@ Route::get('/reports', function () {
             ['value' => 'medication', 'label' => 'eMAR'],
             ['value' => 'document', 'label' => 'Documents'],
             ['value' => 'vital', 'label' => 'Observations'],
+            ['value' => 'incident', 'label' => 'Incidents'],
             ['value' => 'form_snapshot', 'label' => 'Draft forms'],
         ],
     ]);
@@ -981,8 +982,8 @@ Route::post('/patients', function () {
         'phone_number' => ['nullable', 'string', 'regex:/^07\d{9}$/'],
         'email_address' => ['required', 'email', 'max:255'],
         'next_of_kin' => ['required', 'string', 'max:255'],
-        'next_of_kin_tel' => ['required', 'string', 'regex:/^07\d{9}$/'],
-        'next_of_kin_email' => ['required', 'email', 'max:255'],
+        'next_of_kin_tel' => ['nullable', 'string', 'regex:/^07\d{9}$/'],
+        'next_of_kin_email' => ['nullable', 'email', 'max:255'],
         'other_relevant_people' => ['nullable', 'string', 'max:1000'],
         'social_services_number' => ['nullable', 'string', 'max:100'],
         'weight_kg' => ['required', 'numeric', 'between:1,500'],
@@ -999,8 +1000,10 @@ Route::post('/patients', function () {
         'dob' => ['required', 'string', 'max:50'],
         'allergies' => ['nullable', 'string', 'max:500'],
         'address' => ['required', 'string', 'max:500'],
+        'latitude' => ['nullable', 'numeric', 'between:-90,90'],
+        'longitude' => ['nullable', 'numeric', 'between:-180,180'],
         'phone' => ['nullable', 'string', 'max:100'],
-        'status' => ['required', 'string', 'in:ACTIVE,OVERDUE,ON LEAVE'],
+        'status' => ['required', 'string', 'in:GREEN,AMBER,RED'],
     ]);
 
     $name = trim($payload['name']);
@@ -1011,8 +1014,11 @@ Route::post('/patients', function () {
         $urlKey = 'ac-'.str_pad((string) random_int(1, 99999), 5, '0', STR_PAD_LEFT);
     }
 
-    $geocoded = ['latitude' => null, 'longitude' => null];
-    if (!empty($payload['address'])) {
+    $geocoded = [
+        'latitude' => !empty($payload['latitude']) ? (float) $payload['latitude'] : null,
+        'longitude' => !empty($payload['longitude']) ? (float) $payload['longitude'] : null,
+    ];
+    if (!$geocoded['latitude'] && !empty($payload['address'])) {
         try {
             $geoResponse = Http::timeout(5)
                 ->withHeaders(['User-Agent' => 'AlloCare/1.0'])
@@ -1048,8 +1054,8 @@ Route::post('/patients', function () {
         'rag_status' => $payload['rag_status'],
         'staffing_ratio' => $payload['staffing_ratio'],
         'next_of_kin' => $payload['next_of_kin'],
-        'next_of_kin_tel' => $payload['next_of_kin_tel'],
-        'next_of_kin_email' => $payload['next_of_kin_email'],
+        'next_of_kin_tel' => ($payload['next_of_kin_tel'] ?? null) ?: null,
+        'next_of_kin_email' => ($payload['next_of_kin_email'] ?? null) ?: null,
         'other_relevant_people' => ($payload['other_relevant_people'] ?? null) ?: null,
         'social_services_number' => ($payload['social_services_number'] ?? null) ?: null,
         'avatar' => 'bg-slate-300',
@@ -1065,8 +1071,20 @@ Route::post('/patients', function () {
             'nhs_number' => $payload['nhs_number'],
             'status' => $payload['status'],
             'rag_status' => $payload['rag_status'],
+            'address' => $payload['address'],
+            'latitude' => $geocoded['latitude'],
+            'longitude' => $geocoded['longitude'],
         ],
     );
+
+    \Illuminate\Support\Facades\Log::info('Patient registered', [
+        'patient_id' => $patient->id,
+        'url_key' => $urlKey,
+        'name' => $name,
+        'address' => $payload['address'],
+        'latitude' => $geocoded['latitude'],
+        'longitude' => $geocoded['longitude'],
+    ]);
 
     return redirect()->route('patients')->with('success', 'Patient created successfully.');
 })->middleware(['auth', 'verified'])->name('patients.store');
@@ -1547,6 +1565,9 @@ Route::get('/patients/{patient}/incidents/create', function (string $patient) {
     $record = Patient::query()->where('url_key', $patient)->firstOrFail();
     $snapshot = FormSnapshot::query()->where('form_key', "incident:{$patient}")->first();
 
+    $snapshotData = $snapshot?->data ?? [];
+    $alreadySubmitted = ($snapshotData['status'] ?? null) === 'Submitted';
+
     $user = request()->user();
     $reporterName = trim((string) (($user->first_name ?? '').' '.($user->surname ?? '')));
     if ($reporterName === '') {
@@ -1555,8 +1576,8 @@ Route::get('/patients/{patient}/incidents/create', function (string $patient) {
 
     return Inertia::render('IncidentReport', [
         'patientSlug' => $patient,
-        'incidentStatus' => 'new',
-        'initialSnapshot' => $snapshot?->data ?? [],
+        'incidentStatus' => $alreadySubmitted ? 'new' : ($snapshot ? 'draft' : 'new'),
+        'initialSnapshot' => $alreadySubmitted ? [] : $snapshotData,
         'patientData' => [
             'name' => $record->name,
             'reference' => $record->reference ?? '#'.strtoupper($record->url_key),
@@ -1899,12 +1920,26 @@ Route::post('/form-snapshots/{formKey}', function (string $formKey) {
         [, $patientUrlKey] = explode(':', $formKey, 2);
     }
 
+    $isIncident = str_starts_with($formKey, 'incident:');
+    $isSubmitted = ($payload['data']['status'] ?? null) === 'Submitted';
+
+    if ($isIncident && $patientUrlKey) {
+        $patientName = Patient::query()->where('url_key', $patientUrlKey)->value('name') ?? $patientUrlKey;
+        $description = $isSubmitted
+            ? "Incident reported for {$patientName}"
+            : "Incident draft saved for {$patientName}";
+        $subjectLabel = $patientName;
+    } else {
+        $description = 'Saved draft for '.$formKey;
+        $subjectLabel = $formKey;
+    }
+
     AuditTrail::record(
-        'saved',
-        'Saved draft for '.$formKey,
-        'form_snapshot',
+        $isIncident && $isSubmitted ? 'created' : 'saved',
+        $description,
+        $isIncident ? 'incident' : 'form_snapshot',
         $formKey,
-        $formKey,
+        $subjectLabel,
         null,
         $patientUrlKey ? ['patient_url_key' => $patientUrlKey] : null,
     );
@@ -1915,6 +1950,240 @@ Route::post('/form-snapshots/{formKey}', function (string $formKey) {
 Route::get('/team', function () {
     return redirect()->route('employees');
 })->middleware(['auth', 'verified'])->name('team');
+
+Route::get('/reports/schedules', function () {
+    if (!AuditTrail::canViewReports(request()->user())) {
+        abort(403);
+    }
+
+    $fromParam = request('from');
+    $toParam = request('to');
+    $from = $fromParam ? Carbon::parse($fromParam)->startOfDay() : now()->subDays(30)->startOfDay();
+    $to = $toParam ? Carbon::parse($toParam)->endOfDay() : now()->endOfDay();
+
+    $schedules = PatientSchedule::query()
+        ->whereBetween('start_at', [$from, $to])
+        ->with(['patient:id,name,url_key', 'assignedUser:id,name'])
+        ->orderBy('start_at')
+        ->get();
+
+    $totalShifts = $schedules->count();
+    $completedShifts = $schedules->filter(fn ($s) => $s->end_at->isPast())->count();
+    $upcomingShifts = $schedules->filter(fn ($s) => $s->start_at->isFuture())->count();
+    $inProgressShifts = $totalShifts - $completedShifts - $upcomingShifts;
+
+    $rescheduledCount = AuditEvent::query()
+        ->where('subject_type', 'schedule')
+        ->where('action', 'updated')
+        ->whereBetween('created_at', [$from, $to])
+        ->count();
+
+    $totalHours = $schedules->sum(function ($s) {
+        return $s->start_at->diffInMinutes($s->end_at) / 60;
+    });
+
+    $byStaff = $schedules->groupBy('assigned_user_id')->map(function ($group) {
+        $user = $group->first()->assignedUser;
+        $hours = $group->sum(fn ($s) => $s->start_at->diffInMinutes($s->end_at) / 60);
+        return [
+            'name' => $user?->name ?? 'Unassigned',
+            'shifts' => $group->count(),
+            'hours' => round($hours, 1),
+        ];
+    })->sortByDesc('shifts')->values();
+
+    $recentShifts = $schedules->map(function ($s) {
+        return [
+            'id' => $s->id,
+            'patient' => $s->patient?->name ?? '-',
+            'carer' => $s->assignedUser?->name ?? '-',
+            'date' => $s->start_at->format('d M Y'),
+            'time' => $s->start_at->format('H:i').' - '.$s->end_at->format('H:i'),
+            'hours' => round($s->start_at->diffInMinutes($s->end_at) / 60, 1),
+            'status' => $s->end_at->isPast() ? 'Completed' : ($s->start_at->isFuture() ? 'Upcoming' : 'In Progress'),
+        ];
+    })->values();
+
+    return Inertia::render('ReportsSchedules', [
+        'stats' => [
+            'totalShifts' => $totalShifts,
+            'completedShifts' => $completedShifts,
+            'upcomingShifts' => $upcomingShifts,
+            'inProgressShifts' => $inProgressShifts,
+            'rescheduledShifts' => $rescheduledCount,
+            'totalHours' => round($totalHours, 1),
+        ],
+        'byStaff' => $byStaff,
+        'shifts' => $recentShifts,
+        'filters' => [
+            'from' => $from->format('Y-m-d'),
+            'to' => $to->format('Y-m-d'),
+        ],
+    ]);
+})->middleware(['auth', 'verified'])->name('reports.schedules');
+
+Route::get('/reports/incidents', function () {
+    if (!AuditTrail::canViewReports(request()->user())) {
+        abort(403);
+    }
+
+    $incidents = FormSnapshot::query()
+        ->where('form_key', 'like', 'incident:%')
+        ->orderByDesc('updated_at')
+        ->get()
+        ->map(function ($snapshot) {
+            $data = $snapshot->data ?? [];
+            $patientUrlKey = str_replace('incident:', '', $snapshot->form_key);
+            $patient = Patient::query()->where('url_key', $patientUrlKey)->first();
+            $reporter = $snapshot->updated_by_user_id
+                ? User::find($snapshot->updated_by_user_id)
+                : null;
+
+            return [
+                'id' => $snapshot->id,
+                'title' => $data['incidentTitle'] ?? '-',
+                'patient_name' => $patient?->name ?? $patientUrlKey,
+                'patient_url_key' => $patientUrlKey,
+                'reporter' => $reporter?->name ?? ($data['reporterName'] ?? 'Unknown'),
+                'incident_date' => $data['incidentDate'] ?? $snapshot->updated_at->format('Y-m-d'),
+                'incident_time' => $data['incidentTime'] ?? '-',
+                'location' => $data['location'] ?? '-',
+                'tags' => $data['tags'] ?? ($data['selectedTags'] ?? []),
+                'status' => $data['status'] ?? 'Submitted',
+                'duration_minutes' => $data['durationMinutes'] ?? ($data['incidentDuration'] ?? null),
+                'submitted_at' => $snapshot->updated_at->format('d M Y H:i'),
+            ];
+        });
+
+    $totalIncidents = $incidents->count();
+    $submittedCount = $incidents->where('status', 'Submitted')->count();
+    $draftCount = $totalIncidents - $submittedCount;
+    $byPatient = $incidents->groupBy('patient_name')->map->count()->sortByDesc(fn ($v) => $v);
+
+    return Inertia::render('ReportsIncidents', [
+        'incidents' => $incidents->values(),
+        'stats' => [
+            'total' => $totalIncidents,
+            'submitted' => $submittedCount,
+            'drafts' => $draftCount,
+            'byPatient' => $byPatient,
+        ],
+    ]);
+})->middleware(['auth', 'verified'])->name('reports.incidents');
+
+Route::get('/reports/incidents/{id}', function (int $id) {
+    if (!AuditTrail::canViewReports(request()->user())) {
+        abort(403);
+    }
+
+    $snapshot = FormSnapshot::query()->findOrFail($id);
+    $data = $snapshot->data ?? [];
+    $patientUrlKey = str_replace('incident:', '', $snapshot->form_key);
+    $patient = Patient::query()->where('url_key', $patientUrlKey)->first();
+    $reporter = $snapshot->updated_by_user_id
+        ? User::find($snapshot->updated_by_user_id)
+        : null;
+
+    return Inertia::render('ReportsIncidentView', [
+        'incident' => [
+            'id' => $snapshot->id,
+            'form_key' => $snapshot->form_key,
+            'title' => $data['incidentTitle'] ?? '-',
+            'patient_name' => $patient?->name ?? $patientUrlKey,
+            'patient_url_key' => $patientUrlKey,
+            'patient_dob' => $patient?->date_of_birth ?? '-',
+            'patient_address' => $patient?->address ?? '-',
+            'reporter' => $data['reporterName'] ?? ($reporter?->name ?? 'Unknown'),
+            'incident_date' => $data['incidentDate'] ?? '-',
+            'incident_time' => $data['incidentTime'] ?? '-',
+            'location' => $data['location'] ?? '-',
+            'antecedent' => $data['antecedent'] ?? '-',
+            'behaviour' => $data['behaviour'] ?? '-',
+            'consequence' => $data['consequence'] ?? '-',
+            'immediate_outcome' => $data['immediateOutcome'] ?? '-',
+            'lessons_learnt' => $data['lessonsLearnt'] ?? '-',
+            'new_triggers' => $data['newTriggers'] ?? '-',
+            'actions_planned' => $data['actionsPlanned'] ?? '-',
+            'tags' => $data['selectedTags'] ?? [],
+            'impacts' => $data['selectedImpacts'] ?? [],
+            'duration_minutes' => $data['incidentDuration'] ?? null,
+            'staff_members' => $data['staffMembers'] ?? [],
+            'manager_name' => $data['managerName'] ?? '-',
+            'manager_sign_off' => $data['managerSignOff'] ?? false,
+            'status' => $data['status'] ?? 'Draft',
+            'submitted_at' => $snapshot->updated_at->format('d M Y H:i'),
+        ],
+    ]);
+})->middleware(['auth', 'verified'])->name('reports.incidents.show');
+
+Route::get('/api/postcode-lookup/{postcode}', function (string $postcode) {
+    $postcode = strtoupper(trim(str_replace(' ', '', $postcode)));
+    if (!preg_match('/^[A-Z]{1,2}\d[A-Z\d]?\d[A-Z]{2}$/', $postcode)) {
+        return response()->json(['error' => 'Invalid UK postcode format.'], 422);
+    }
+
+    $formatted = strlen($postcode) > 4
+        ? substr($postcode, 0, -3).' '.substr($postcode, -3)
+        : $postcode;
+
+    $apiKey = config('services.ideal_postcodes.api_key', 'ak_test');
+
+    try {
+        $response = Http::timeout(5)->get("https://api.ideal-postcodes.co.uk/v1/postcodes/{$postcode}", [
+            'api_key' => $apiKey,
+        ]);
+        if ($response->ok()) {
+            $results = $response->json()['result'] ?? [];
+            $addresses = collect($results)->map(function ($addr) use ($formatted) {
+                $line1 = trim(implode(', ', array_filter([
+                    $addr['line_1'] ?? '',
+                    $addr['line_2'] ?? '',
+                    $addr['line_3'] ?? '',
+                ])), ', ');
+                $city = $addr['post_town'] ?? '';
+                return [
+                    'label' => implode(', ', array_filter([$line1, $city, $formatted])),
+                    'address_line_1' => $line1,
+                    'city' => $city,
+                    'postcode' => $formatted,
+                    'latitude' => $addr['latitude'] ?? null,
+                    'longitude' => $addr['longitude'] ?? null,
+                ];
+            })->values();
+            return response()->json(['addresses' => $addresses]);
+        }
+    } catch (\Throwable $e) {
+        // fall through to postcodes.io
+    }
+
+    try {
+        $response = Http::timeout(5)
+            ->withHeaders(['User-Agent' => 'AlloCare/1.0'])
+            ->get("https://api.postcodes.io/postcodes/{$formatted}");
+        if ($response->ok()) {
+            $result = $response->json()['result'] ?? [];
+            $label = implode(', ', array_filter([
+                $result['admin_ward'] ?? '',
+                $result['admin_district'] ?? '',
+                $formatted,
+            ]));
+            return response()->json([
+                'addresses' => [[
+                    'label' => $label,
+                    'address_line_1' => '',
+                    'city' => $result['admin_district'] ?? '',
+                    'postcode' => $formatted,
+                    'latitude' => $result['latitude'] ?? null,
+                    'longitude' => $result['longitude'] ?? null,
+                ]],
+                'manual_entry_needed' => true,
+            ]);
+        }
+        return response()->json(['error' => 'Postcode not found.'], 404);
+    } catch (\Throwable $e) {
+        return response()->json(['error' => 'Unable to verify postcode. Please try again.'], 503);
+    }
+})->middleware(['auth', 'verified'])->name('api.postcode-lookup');
 
 Route::middleware('auth')->group(function () {
     Route::get('/profile', [ProfileController::class, 'edit'])->name('profile.edit');

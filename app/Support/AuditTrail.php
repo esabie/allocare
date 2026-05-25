@@ -334,6 +334,16 @@ class AuditTrail
             $changesSummary = count($changes).' field(s) recorded';
         }
 
+        $description = $event->description;
+        $subjectLabel = $event->subject_label;
+
+        if (preg_match('/^Saved draft for incident:(.+)$/', $description, $m)) {
+            $patientUrlKey = $m[1];
+            $patientName = \App\Models\Patient::query()->where('url_key', $patientUrlKey)->value('name') ?? $patientUrlKey;
+            $description = "Incident draft saved for {$patientName}";
+            $subjectLabel = $patientName;
+        }
+
         return [
             'id' => $event->id,
             'created_at' => optional($event->created_at)->toIso8601String(),
@@ -342,8 +352,8 @@ class AuditTrail
             'action' => $event->action,
             'subject_type' => $event->subject_type,
             'subject_key' => $event->subject_key,
-            'subject_label' => $event->subject_label,
-            'description' => $event->description,
+            'subject_label' => $subjectLabel,
+            'description' => $description,
             'changes' => $changes,
             'changes_summary' => $changesSummary,
             'request_method' => $event->request_method,
