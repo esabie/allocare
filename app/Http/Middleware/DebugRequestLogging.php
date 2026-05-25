@@ -2,6 +2,7 @@
 
 namespace App\Http\Middleware;
 
+use App\Support\AuditTrail;
 use Closure;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
@@ -31,7 +32,9 @@ class DebugRequestLogging
         try {
             $response = $next($request);
         } catch (Throwable $exception) {
-            $this->writeAuditEntry($request, 500, (int) ((microtime(true) - $start) * 1000), $exception->getMessage());
+            $durationMs = (int) ((microtime(true) - $start) * 1000);
+            $this->writeAuditEntry($request, 500, $durationMs, $exception->getMessage());
+            AuditTrail::recordSystemActivity($request, 500, $durationMs, $exception->getMessage());
 
             if (app()->isLocal()) {
                 Log::error('Request exception', [
@@ -55,11 +58,11 @@ class DebugRequestLogging
             ]);
         }
 
-        $this->writeAuditEntry(
-            $request,
-            $response->getStatusCode(),
-            (int) ((microtime(true) - $start) * 1000),
-        );
+        $status = $response->getStatusCode();
+        $durationMs = (int) ((microtime(true) - $start) * 1000);
+
+        $this->writeAuditEntry($request, $status, $durationMs);
+        AuditTrail::recordSystemActivity($request, $status, $durationMs);
 
         return $response;
     }

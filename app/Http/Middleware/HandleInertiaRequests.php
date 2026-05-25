@@ -2,6 +2,7 @@
 
 namespace App\Http\Middleware;
 
+use App\Support\AuditTrail;
 use Illuminate\Http\Request;
 use Inertia\Middleware;
 
@@ -43,6 +44,8 @@ class HandleInertiaRequests extends Middleware
                     'primary_role' => $authUser->primary_role,
                     'photo_path' => $authUser->photo_path,
                     'photoUrl' => $authUser->photo_path ? route('employees.photo', $authUser) : null,
+                    'canViewReports' => AuditTrail::canViewReports($authUser),
+                    'canViewActivityLog' => AuditTrail::canViewActivityLog($authUser),
                 ] : null,
             ],
             'flash' => [

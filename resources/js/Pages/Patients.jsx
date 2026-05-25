@@ -1,6 +1,7 @@
 import { Head, Link, usePage } from '@inertiajs/react';
 import { useEffect, useMemo, useState } from 'react';
-import ApplicationLogo from '@/Components/ApplicationLogo';
+import AppHeaderNav from '@/Components/AppHeaderNav';
+import DashboardSidebar from '@/Components/DashboardSidebar';
 import ProfileMenu from '@/Components/ProfileMenu';
 const CARDS_PER_PAGE = 9;
 
@@ -68,58 +69,11 @@ export default function Patients({ patients: dbPatients = [] }) {
 
             <div className="min-h-screen bg-slate-100 text-slate-700">
                 <div className="flex w-full">
-                    <aside className="hidden min-h-screen w-64 border-r border-slate-200 bg-slate-50 px-5 py-8 lg:flex lg:flex-col">
-                        <div className="mb-10">
-                            <div className="mb-3">
-                                <Link href={route('dashboard')}>
-                                    <ApplicationLogo className="block w-full" />
-                                </Link>
-                            </div>
-                            <p className="text-xs uppercase tracking-[0.2em] text-slate-400">Clinical Precision</p>
-                        </div>
-
-                        <nav className="space-y-2">
-                            <Link href={route('dashboard')} className="block w-full rounded-xl px-4 py-3 text-left text-sm font-medium text-slate-600 hover:bg-slate-100">
-                                Overview
-                            </Link>
-                            <button type="button" className="w-full rounded-xl px-4 py-3 text-left text-sm font-medium text-slate-600 hover:bg-slate-100">
-                                Journal
-                            </button>
-                            <button type="button" className="w-full rounded-xl px-4 py-3 text-left text-sm font-medium text-slate-600 hover:bg-slate-100">
-                                Care Alerts
-                            </button>
-                            <button type="button" className="w-full rounded-xl px-4 py-3 text-left text-sm font-medium text-slate-600 hover:bg-slate-100">
-                                Analytics
-                            </button>
-                            <Link href={route('employees')} className="block w-full rounded-xl px-4 py-3 text-left text-sm font-medium text-slate-600 hover:bg-slate-100">
-                                Employees
-                            </Link>
-                        </nav>
-
-                        <div className="mt-auto space-y-2">
-                            <button type="button" className="w-full rounded-xl bg-white px-4 py-3 text-left text-sm font-medium text-slate-600">
-                                Insights
-                            </button>
-                            <button type="button" className="w-full rounded-xl px-4 py-3 text-left text-sm text-slate-500">
-                                Help
-                            </button>
-                            <button type="button" className="w-full rounded-xl px-4 py-3 text-left text-sm text-slate-500">
-                                Sign out
-                            </button>
-                        </div>
-                    </aside>
+                    <DashboardSidebar />
 
                     <main className="flex-1 p-4 sm:p-6 lg:p-8">
                         <header className="mb-6 flex flex-wrap items-center justify-between gap-4 rounded-2xl bg-white px-5 py-4">
-                            <div className="flex items-center gap-6 text-sm font-medium text-slate-600">
-                                <Link href={route('patients')} className="text-slate-900">Patients</Link>
-                                <Link href={route('schedules')} className="hover:text-slate-900">Schedules</Link>
-                                <span>Reports</span>
-                                <span>Inventory</span>
-                                {/* <Link href={route('employees')} className="hover:text-slate-900">
-                                    Employees
-                                </Link> */}
-                            </div>
+                            <AppHeaderNav active="patients" />
 
                             <div className="flex items-center gap-3">
                                 <ProfileMenu />

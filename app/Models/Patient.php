@@ -19,6 +19,8 @@ class Patient extends Model
         'dob',
         'allergies',
         'address',
+        'latitude',
+        'longitude',
         'phone',
         'status',
         'rag_status',

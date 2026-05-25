@@ -1,7 +1,19 @@
 import { Head, Link, useForm } from '@inertiajs/react';
 import { useRef, useState } from 'react';
-import ApplicationLogo from '@/Components/ApplicationLogo';
+import DashboardSidebar from '@/Components/DashboardSidebar';
+import AppHeaderNav from '@/Components/AppHeaderNav';
 import ProfileMenu from '@/Components/ProfileMenu';
+
+function localDateInputMax() {
+    const today = new Date();
+    const year = today.getFullYear();
+    const month = String(today.getMonth() + 1).padStart(2, '0');
+    const day = String(today.getDate()).padStart(2, '0');
+
+    return `${year}-${month}-${day}`;
+}
+
+const maxDateOfBirth = localDateInputMax();
 
 export default function PatientsCreate() {
     const fileInputRef = useRef(null);
@@ -50,27 +62,32 @@ export default function PatientsCreate() {
 
     const submit = (event) => {
         event.preventDefault();
-        if (!photoFile) {
-            setPhotoError('Patient photo is required.');
-            return;
-        }
 
         const fullName = `${data.first_name} ${data.last_name}`.trim();
         const mergedAddress = [data.address_line_1, data.city, data.postcode].filter(Boolean).join(', ');
 
-        transform((form) => ({
-            ...form,
-            nhs_number: String(form.nhs_number || '').replace(/\D/g, ''),
-            name: fullName,
-            dob: form.date_of_birth,
-            allergies: form.severe_allergies,
-            address: mergedAddress,
-            phone: form.phone_number,
-            status: ragToStatus[form.rag_status] || 'ACTIVE',
-            photo: photoFile,
-        }));
+        transform((form) => {
+            const payload = {
+                ...form,
+                nhs_number: String(form.nhs_number || '').replace(/\D/g, ''),
+                name: fullName,
+                dob: form.date_of_birth,
+                allergies: form.severe_allergies?.trim() || null,
+                primary_diagnosis: form.primary_diagnosis?.trim() || null,
+                severe_allergies: form.severe_allergies?.trim() || null,
+                address: mergedAddress,
+                phone: form.phone_number,
+                status: ragToStatus[form.rag_status] || 'ACTIVE',
+            };
 
-        post(route('patients.store'), { forceFormData: true });
+            if (photoFile) {
+                payload.photo = photoFile;
+            }
+
+            return payload;
+        });
+
+        post(route('patients.store'), { forceFormData: Boolean(photoFile) });
     };
 
     const handleNhsNumberChange = (value) => {
@@ -128,7 +145,7 @@ export default function PatientsCreate() {
         if (fileInputRef.current) {
             fileInputRef.current.value = '';
         }
-        setPhotoError('Patient photo is required.');
+        setPhotoError('');
     };
 
     return (
@@ -136,58 +153,11 @@ export default function PatientsCreate() {
             <Head title="Register New Client" />
             <div className="min-h-screen bg-slate-100 text-slate-700">
                 <div className="flex w-full">
-                    <aside className="hidden min-h-screen w-64 border-r border-slate-200 bg-slate-50 px-5 py-8 lg:flex lg:flex-col">
-                        <div className="mb-10">
-                            <div className="mb-3">
-                                <Link href={route('dashboard')}>
-                                    <ApplicationLogo className="block w-full" />
-                                </Link>
-                            </div>
-                            <p className="text-xs uppercase tracking-[0.2em] text-slate-400">Clinical Precision</p>
-                        </div>
-
-                        <nav className="space-y-2">
-                            <Link href={route('dashboard')} className="block w-full rounded-xl px-4 py-3 text-left text-sm font-medium text-slate-600 hover:bg-slate-100">
-                                Overview
-                            </Link>
-                            <button type="button" className="w-full rounded-xl px-4 py-3 text-left text-sm font-medium text-slate-600 hover:bg-slate-100">
-                                Journal
-                            </button>
-                            <button type="button" className="w-full rounded-xl px-4 py-3 text-left text-sm font-medium text-slate-600 hover:bg-slate-100">
-                                Care Alerts
-                            </button>
-                            <button type="button" className="w-full rounded-xl px-4 py-3 text-left text-sm font-medium text-slate-600 hover:bg-slate-100">
-                                Analytics
-                            </button>
-                            <Link href={route('employees')} className="block w-full rounded-xl px-4 py-3 text-left text-sm font-medium text-slate-600 hover:bg-slate-100">
-                                Employees
-                            </Link>
-                        </nav>
-
-                        <div className="mt-auto space-y-2">
-                            <button type="button" className="w-full rounded-xl bg-white px-4 py-3 text-left text-sm font-medium text-slate-600">
-                                Insights
-                            </button>
-                            <button type="button" className="w-full rounded-xl px-4 py-3 text-left text-sm text-slate-500">
-                                Help
-                            </button>
-                            <button type="button" className="w-full rounded-xl px-4 py-3 text-left text-sm text-slate-500">
-                                Sign out
-                            </button>
-                        </div>
-                    </aside>
+                    <DashboardSidebar />
 
                     <main className="flex-1 p-4 sm:p-6 lg:p-8">
                         <header className="mb-6 flex flex-wrap items-center justify-between gap-4 rounded-2xl bg-white px-5 py-4">
-                            <div className="flex items-center gap-6 text-sm font-medium text-slate-600">
-                                <Link href={route('patients')} className="text-slate-900">
-                                    Patients
-                                </Link>
-                                <Link href={route('schedules')} className="hover:text-slate-900">Schedules</Link>
-                                <span>Reports</span>
-                                <span>Inventory</span>
-                            </div>
-
+                            <AppHeaderNav active="patients" />
                             <div className="flex items-center gap-3">
                                 <ProfileMenu />
                             </div>
@@ -256,7 +226,7 @@ export default function PatientsCreate() {
                                     >
                                         Remove
                                     </button>
-                                    <span className="text-xs text-slate-500">JPG or PNG, max 3MB. Recommended 400x400px.</span>
+                                    <span className="text-xs text-slate-500">Optional. JPG or PNG, max 3MB. Recommended 400x400px.</span>
                                 </div>
                                 {(photoError || errors.photo) && (
                                     <p className="mb-3 text-xs font-medium text-rose-600">{photoError || errors.photo}</p>
@@ -284,7 +254,7 @@ export default function PatientsCreate() {
                                     </div>
                                     <div>
                                         <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">Date of Birth</label>
-                                        <input required type="date" value={data.date_of_birth} onChange={(e) => setData('date_of_birth', e.target.value)} className="mt-1 w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm" />
+                                        <input required type="date" max={maxDateOfBirth} value={data.date_of_birth} onChange={(e) => setData('date_of_birth', e.target.value)} className="mt-1 w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm" />
                                     </div>
                                     <div>
                                         <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">Gender</label>
@@ -301,7 +271,7 @@ export default function PatientsCreate() {
                                 <p className="text-sm text-slate-500">Primary care indicators and safety status</p>
                                 <div className="mt-4 space-y-3">
                                     <div>
-                                        <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">Primary Diagnosis</label>
+                                        <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">Primary Diagnosis (Optional)</label>
                                         <input value={data.primary_diagnosis} onChange={(e) => setData('primary_diagnosis', e.target.value)} className="mt-1 w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm" placeholder="e.g. Type II Diabetes, Early Onset Dementia" />
                                         {errors.primary_diagnosis && <p className="mt-1 text-xs text-rose-600">{errors.primary_diagnosis}</p>}
                                     </div>
@@ -351,8 +321,8 @@ export default function PatientsCreate() {
                                         {errors.postcode && <p className="mt-1 text-xs text-rose-600">{errors.postcode}</p>}
                                     </div>
                                     <div>
-                                        <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">Phone Number</label>
-                                        <input required value={data.phone_number} onChange={(e) => setData('phone_number', e.target.value)} placeholder="07XXXXXXXXX" className="mt-1 w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm" />
+                                        <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">Phone Number (Optional)</label>
+                                        <input value={data.phone_number} onChange={(e) => setData('phone_number', e.target.value)} placeholder="07XXXXXXXXX" className="mt-1 w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm" />
                                     </div>
                                     <div>
                                         <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">Email Address</label>
@@ -388,8 +358,8 @@ export default function PatientsCreate() {
                                         {errors.other_relevant_people && <p className="mt-1 text-xs text-rose-600">{errors.other_relevant_people}</p>}
                                     </div>
                                     <div>
-                                        <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">Social services number</label>
-                                        <input required value={data.social_services_number} onChange={(e) => setData('social_services_number', e.target.value)} className="mt-1 w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm" />
+                                        <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">Social services number (Optional)</label>
+                                        <input value={data.social_services_number} onChange={(e) => setData('social_services_number', e.target.value)} className="mt-1 w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm" />
                                         {errors.social_services_number && <p className="mt-1 text-xs text-rose-600">{errors.social_services_number}</p>}
                                     </div>
                                     <div>

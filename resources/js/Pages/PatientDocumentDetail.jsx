@@ -1,6 +1,7 @@
 import { Head, Link, router, usePage } from '@inertiajs/react';
 import { useEffect, useState } from 'react';
 import ApplicationLogo from '@/Components/ApplicationLogo';
+import AppHeaderNav from '@/Components/AppHeaderNav';
 import ProfileMenu from '@/Components/ProfileMenu';
 
 const sideTabs = [
@@ -128,7 +129,7 @@ const aboutMeSections = [
             { label: 'Date created', key: 'dateCreated', type: 'date' },
             { label: 'Next review date', key: 'nextReviewDate', type: 'date' },
             { label: 'Client/Representative signature & date', key: 'clientSignatureDate', type: 'text' },
-            { label: 'Staff member completing & role', key: 'staffRole', type: 'text' },
+            { label: 'Staff member completing', key: 'staffRole', type: 'text' },
         ],
     },
 ];
@@ -493,6 +494,8 @@ export default function PatientDocumentDetail({ patientSlug = 'cr-88210', docume
                     ? staffMemberAndRole
                     : formData[field.key] ?? '';
 
+        const isOptional = field.label?.toLowerCase().includes('(optional)');
+
         if (field.type === 'textarea') {
             return (
                 <textarea
@@ -500,7 +503,7 @@ export default function PatientDocumentDetail({ patientSlug = 'cr-88210', docume
                     onChange={(event) => setFieldValue(field.key, event.target.value)}
                     className={`${commonClasses} min-h-[96px]`}
                     placeholder="Enter details"
-                    required
+                    required={!isOptional}
                     readOnly={isReadOnlyView}
                 />
             );
@@ -514,7 +517,7 @@ export default function PatientDocumentDetail({ patientSlug = 'cr-88210', docume
                 className={commonClasses}
                 placeholder="Enter details"
                 readOnly={field.key === 'staffRole' || isSystemDateField || isSystemTimeField || isReadOnlyView}
-                required
+                required={!isOptional}
             />
         );
     };
@@ -543,6 +546,8 @@ export default function PatientDocumentDetail({ patientSlug = 'cr-88210', docume
                                     <Link key={tab.key} href={route('patients.risks', patientSlug)} className="block w-full rounded-lg px-3 py-2.5 text-left text-sm font-medium text-slate-600 hover:bg-slate-100">{tab.label}</Link>
                                 ) : tab.key === 'medication' ? (
                                     <Link key={tab.key} href={route('patients.mar', patientSlug)} className="block w-full rounded-lg px-3 py-2.5 text-left text-sm font-medium text-slate-600 hover:bg-slate-100">{tab.label}</Link>
+                                ) : tab.key === 'observations' ? (
+                                    <Link key={tab.key} href={route('patients.observations', patientSlug)} className="block w-full rounded-lg px-3 py-2.5 text-left text-sm font-medium text-slate-600 hover:bg-slate-100">{tab.label}</Link>
                                 ) : tab.key === 'documents' ? (
                                     <Link key={tab.key} href={route('patients.documents', patientSlug)} className="block w-full rounded-lg bg-emerald-50 px-3 py-2.5 text-left text-sm font-medium text-emerald-700">{tab.label}</Link>
                                 ) : tab.key === 'logs' ? (
@@ -558,12 +563,7 @@ export default function PatientDocumentDetail({ patientSlug = 'cr-88210', docume
 
                     <main className="flex-1 p-4 sm:p-6 lg:p-8">
                         <header className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-2xl bg-white px-5 py-3">
-                            <div className="flex items-center gap-6 text-sm font-medium text-slate-600">
-                                <Link href={route('dashboard')} className="hover:text-slate-900">Dashboard</Link>
-                                <Link href={route('patients')} className="text-slate-900">Patients</Link>
-                                <span>Schedules</span>
-                                <span>Reports</span>
-                            </div>
+                            <AppHeaderNav active="patients" />
                             <ProfileMenu />
                         </header>
 

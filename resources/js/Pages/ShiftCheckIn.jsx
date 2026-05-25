@@ -1,7 +1,19 @@
 import { Head, Link, router, usePage } from '@inertiajs/react';
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import ApplicationLogo from '@/Components/ApplicationLogo';
+import AppHeaderNav from '@/Components/AppHeaderNav';
 import ProfileMenu from '@/Components/ProfileMenu';
+
+function haversineDistance(lat1, lon1, lat2, lon2) {
+    const R = 6371000;
+    const toRad = (v) => (v * Math.PI) / 180;
+    const dLat = toRad(lat2 - lat1);
+    const dLon = toRad(lon2 - lon1);
+    const a = Math.sin(dLat / 2) ** 2 + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
+    return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+const GPS_THRESHOLD_METRES = 200;
 
 const sideTabs = [
     { label: 'Overview', key: 'overview' },
@@ -102,6 +114,8 @@ export default function ShiftCheckIn({ patientSlug = 'arthur-henderson', initial
     const { auth } = usePage().props;
     const patientName = patientContext?.name || 'Patient';
     const patientLocation = patientContext?.location || 'Location not provided';
+    const patientLat = patientContext?.latitude ?? null;
+    const patientLng = patientContext?.longitude ?? null;
     const scheduledStartAt = patientContext?.scheduledStartAt ? new Date(patientContext.scheduledStartAt) : null;
     const scheduledEndAt = patientContext?.scheduledEndAt ? new Date(patientContext.scheduledEndAt) : null;
     const scheduledWindow = patientContext?.scheduledWindow || 'Not scheduled';
@@ -132,6 +146,48 @@ export default function ShiftCheckIn({ patientSlug = 'arthur-henderson', initial
     const [sessionEndedAt, setSessionEndedAt] = useState(null);
     const [showManualEndReason, setShowManualEndReason] = useState(false);
     const [currentTime, setCurrentTime] = useState(new Date());
+
+    const [gpsStatus, setGpsStatus] = useState('idle');
+    const [gpsCoords, setGpsCoords] = useState(null);
+    const [gpsDistance, setGpsDistance] = useState(null);
+    const [gpsError, setGpsError] = useState(null);
+
+    const verifyGps = useCallback(() => {
+        if (!navigator.geolocation) {
+            setGpsStatus('unsupported');
+            setGpsError('Geolocation is not supported by this device.');
+            return;
+        }
+        setGpsStatus('loading');
+        setGpsError(null);
+        navigator.geolocation.getCurrentPosition(
+            (position) => {
+                const { latitude, longitude, accuracy } = position.coords;
+                setGpsCoords({ latitude, longitude, accuracy });
+                if (patientLat !== null && patientLng !== null) {
+                    const dist = haversineDistance(latitude, longitude, patientLat, patientLng);
+                    setGpsDistance(Math.round(dist));
+                    if (dist <= GPS_THRESHOLD_METRES) {
+                        setGpsStatus('verified');
+                        setProtocol((prev) => ({ ...prev, locationVerification: 'yes' }));
+                    } else {
+                        setGpsStatus('too_far');
+                    }
+                } else {
+                    setGpsStatus('no_coords');
+                }
+            },
+            (err) => {
+                setGpsStatus('error');
+                setGpsError(
+                    err.code === 1
+                        ? 'Location permission denied. Please allow location access.'
+                        : 'Unable to determine your location. Please try again.'
+                );
+            },
+            { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 }
+        );
+    }, [patientLat, patientLng]);
     const [vitals, setVitals] = useState({
         heartRate: latestVitals?.heartRate ? String(latestVitals.heartRate) : '',
         bpSystolic: latestVitals?.bpSystolic ? String(latestVitals.bpSystolic) : '',
@@ -275,6 +331,10 @@ export default function ShiftCheckIn({ patientSlug = 'arthur-henderson', initial
                                     <Link key={tab.key} href={route('patients.mar', patientSlug)} className="block rounded-lg px-3 py-2.5 text-sm font-medium text-slate-600 hover:bg-slate-100">
                                         {tab.label}
                                     </Link>
+                                ) : tab.key === 'observations' ? (
+                                    <Link key={tab.key} href={route('patients.observations', patientSlug)} className="block rounded-lg px-3 py-2.5 text-sm font-medium text-slate-600 hover:bg-slate-100">
+                                        {tab.label}
+                                    </Link>
                                 ) : tab.key === 'documents' ? (
                                     <Link key={tab.key} href={route('patients.documents', patientSlug)} className="block rounded-lg px-3 py-2.5 text-sm font-medium text-slate-600 hover:bg-slate-100">
                                         {tab.label}
@@ -303,12 +363,7 @@ export default function ShiftCheckIn({ patientSlug = 'arthur-henderson', initial
 
                     <main className="flex-1 p-4 sm:p-6 lg:p-8">
                         <header className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-2xl bg-white px-5 py-3">
-                            <div className="flex items-center gap-6 text-sm font-medium text-slate-600">
-                                <Link href={route('dashboard')} className="hover:text-slate-900">Dashboard</Link>
-                                <Link href={route('patients')} className="text-slate-900">Patients</Link>
-                                <Link href={route('schedules')} className="hover:text-slate-900">Schedules</Link>
-                                <span>Reports</span>
-                            </div>
+                            <AppHeaderNav active="patients" />
                             <div className="flex items-center gap-3">
                                 <ProfileMenu />
                             </div>
@@ -366,6 +421,69 @@ export default function ShiftCheckIn({ patientSlug = 'arthur-henderson', initial
                                             <span className="w-24 shrink-0 text-slate-500">Location</span>
                                             <span className="flex-1 text-right leading-snug break-words">{patientLocation}</span>
                                         </div>
+                                    </div>
+
+                                    {/* GPS Verification */}
+                                    <div className="mt-4 border-t border-slate-100 pt-4">
+                                        <p className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-slate-400">GPS Verification</p>
+                                        {gpsStatus === 'idle' && (
+                                            <button
+                                                type="button"
+                                                onClick={verifyGps}
+                                                className="w-full rounded-lg bg-emerald-600 px-3 py-2 text-xs font-semibold text-white shadow-sm transition hover:bg-emerald-700 active:scale-[.97]"
+                                            >
+                                                Verify My Location
+                                            </button>
+                                        )}
+                                        {gpsStatus === 'loading' && (
+                                            <div className="flex items-center gap-2 text-xs text-slate-500">
+                                                <svg className="h-4 w-4 animate-spin text-emerald-600" viewBox="0 0 24 24" fill="none">
+                                                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                                                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z" />
+                                                </svg>
+                                                Acquiring GPS position…
+                                            </div>
+                                        )}
+                                        {gpsStatus === 'verified' && (
+                                            <div className="rounded-lg bg-emerald-50 p-2.5 text-xs font-medium text-emerald-700">
+                                                ✓ Location verified ({gpsDistance}m from care address)
+                                            </div>
+                                        )}
+                                        {gpsStatus === 'too_far' && (
+                                            <div className="space-y-2">
+                                                <div className="rounded-lg bg-amber-50 p-2.5 text-xs font-medium text-amber-700">
+                                                    ⚠ You are {gpsDistance}m away (max {GPS_THRESHOLD_METRES}m)
+                                                </div>
+                                                <button
+                                                    type="button"
+                                                    onClick={verifyGps}
+                                                    className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50"
+                                                >
+                                                    Retry
+                                                </button>
+                                            </div>
+                                        )}
+                                        {gpsStatus === 'no_coords' && (
+                                            <div className="rounded-lg bg-slate-100 p-2.5 text-xs text-slate-600">
+                                                GPS captured (lat: {gpsCoords?.latitude?.toFixed(5)}, lng: {gpsCoords?.longitude?.toFixed(5)}). No patient coordinates on file to compare.
+                                            </div>
+                                        )}
+                                        {(gpsStatus === 'error' || gpsStatus === 'unsupported') && (
+                                            <div className="space-y-2">
+                                                <div className="rounded-lg bg-rose-50 p-2.5 text-xs font-medium text-rose-700">
+                                                    {gpsError}
+                                                </div>
+                                                {gpsStatus === 'error' && (
+                                                    <button
+                                                        type="button"
+                                                        onClick={verifyGps}
+                                                        className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50"
+                                                    >
+                                                        Retry
+                                                    </button>
+                                                )}
+                                            </div>
+                                        )}
                                     </div>
                                 </article>
 

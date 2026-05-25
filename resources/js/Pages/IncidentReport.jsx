@@ -2,7 +2,6 @@ import { Head, Link, router, usePage } from '@inertiajs/react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import ApplicationLogo from '@/Components/ApplicationLogo';
 import ProfileMenu from '@/Components/ProfileMenu';
-import { getPatientByIdentifier } from '@/data/patients';
 
 const sideTabs = [
     { label: 'Overview' },
@@ -34,14 +33,13 @@ function getStatusMeta(incidentStatus) {
     };
 }
 
-export default function IncidentReport({ patientSlug = 'cr-88210', incidentStatus = 'new', initialSnapshot = null }) {
+export default function IncidentReport({ patientSlug = 'cr-88210', incidentStatus = 'new', initialSnapshot = null, patientData = {}, reporterName = '' }) {
     const formRef = useRef(null);
     const { auth } = usePage().props;
-    const patient = getPatientByIdentifier(patientSlug);
     const [selectedTags, setSelectedTags] = useState([]);
     const [incidentDuration, setIncidentDuration] = useState(5);
     const [selectedImpacts, setSelectedImpacts] = useState([]);
-    const [staffMembers, setStaffMembers] = useState(['Michael Thorne (Lead)', 'Sarah Al-Zaid']);
+    const [staffMembers, setStaffMembers] = useState(reporterName ? [reporterName] : []);
     const [newStaffMember, setNewStaffMember] = useState('');
     const [managerName, setManagerName] = useState('');
     const [managerSignOff, setManagerSignOff] = useState(false);
@@ -218,18 +216,38 @@ export default function IncidentReport({ patientSlug = 'cr-88210', incidentStatu
                             <div className="grid grid-cols-1 gap-3 xl:grid-cols-4">
                                 <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
                                     <p className="text-[11px] uppercase tracking-wide text-slate-500">Patient Name</p>
-                                    <p className="mt-1 text-lg font-semibold text-slate-900">{patient?.name || 'Eleanor Thompson'}</p>
+                                    <p className="mt-1 text-lg font-semibold text-slate-900">{patientData.name || 'Unknown Patient'}</p>
                                 </div>
                                 <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
                                     <p className="text-[11px] uppercase tracking-wide text-slate-500">DOB</p>
-                                    <p className="mt-1 text-sm font-medium text-slate-700">{patient?.dob || '08/03/1951'}</p>
+                                    <p className="mt-1 text-sm font-medium text-slate-700">{patientData.dob || 'Not available'}</p>
+                                </div>
+                                <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+                                    <p className="text-[11px] uppercase tracking-wide text-slate-500">Reference</p>
+                                    <p className="mt-1 text-sm font-semibold text-slate-700">{patientData.reference || patientSlug}</p>
                                 </div>
                                 <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
                                     <p className="text-[11px] uppercase tracking-wide text-slate-500">Form Number</p>
                                     <p className="mt-1 text-sm font-semibold text-slate-700">{incidentRef}</p>
                                 </div>
+                            </div>
+                            <div className="mt-3 grid grid-cols-1 gap-3 xl:grid-cols-4">
                                 <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
-                                    <p className="text-[11px] uppercase tracking-wide text-slate-500">Status</p>
+                                    <p className="text-[11px] uppercase tracking-wide text-slate-500">Address</p>
+                                    <p className="mt-1 text-sm text-slate-700">{patientData.address || '-'}</p>
+                                </div>
+                                <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+                                    <p className="text-[11px] uppercase tracking-wide text-slate-500">Allergies</p>
+                                    <p className="mt-1 text-sm text-slate-700">
+                                        {(patientData.allergies || []).length > 0 ? patientData.allergies.join(', ') : 'None'}
+                                    </p>
+                                </div>
+                                <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+                                    <p className="text-[11px] uppercase tracking-wide text-slate-500">Patient Status</p>
+                                    <p className="mt-1 text-sm font-semibold text-slate-700">{patientData.status || '-'}</p>
+                                </div>
+                                <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+                                    <p className="text-[11px] uppercase tracking-wide text-slate-500">Report Status</p>
                                     <p className={`mt-1 text-sm font-semibold ${statusMeta.classes}`}>{statusMeta.label}</p>
                                 </div>
                             </div>
@@ -241,11 +259,8 @@ export default function IncidentReport({ patientSlug = 'cr-88210', incidentStatu
                                 <div className="mt-3 space-y-2 text-sm text-slate-700">
                                     <input type="date" required className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2" />
                                     <input
-                                        type="text"
+                                        type="time"
                                         required
-                                        placeholder="HH:MM"
-                                        inputMode="numeric"
-                                        pattern="^([01][0-9]|2[0-3]):[0-5][0-9]$"
                                         className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2"
                                     />
                                 </div>
@@ -260,11 +275,12 @@ export default function IncidentReport({ patientSlug = 'cr-88210', incidentStatu
                                 />
                             </div>
                             <div className="rounded-2xl bg-white p-4">
-                                <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Personnel</p>
+                                <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Reporting Staff Member</p>
                                 <input
                                     type="text"
                                     required
-                                    placeholder="Nurse Michael Thorne"
+                                    defaultValue={reporterName}
+                                    placeholder="Your name"
                                     className="mt-3 w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm"
                                 />
                             </div>

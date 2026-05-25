@@ -1,5 +1,6 @@
 import { Head, Link, usePage } from '@inertiajs/react';
-import ApplicationLogo from '@/Components/ApplicationLogo';
+import AppHeaderNav from '@/Components/AppHeaderNav';
+import DashboardSidebar from '@/Components/DashboardSidebar';
 import ProfileMenu from '@/Components/ProfileMenu';
 
 const statCards = [
@@ -151,22 +152,8 @@ function Donut({ total, metrics }) {
 }
 
 export default function Welcome() {
-    const authUser = usePage().props?.auth?.user;
     const dashboardStats = usePage().props?.dashboardStats || {};
-    const normalizedRole = String(authUser?.primary_role || '')
-        .trim()
-        .toLowerCase()
-        .replace(/\s+/g, '_');
-    const isAdminUser = ['admin', 'super_admin'].includes(normalizedRole);
-
-    const sideMenu = [
-        { label: 'Overview', href: route('dashboard') },
-        { label: 'Journal' },
-        { label: 'Care Alerts' },
-        { label: 'Analytics' },
-        { label: 'Employees', href: route('employees') },
-        ...(isAdminUser ? [{ label: 'Activity Logs', href: route('admin.activity-logs') }] : []),
-    ];
+    const recentJournalEntries = usePage().props?.recentJournalEntries || [];
 
     const cards = [
         {
@@ -205,67 +192,11 @@ export default function Welcome() {
 
             <div className="min-h-screen bg-slate-100 text-slate-700">
                 <div className="flex w-full">
-                    <aside className="hidden min-h-screen w-64 border-r border-slate-200 bg-slate-50 px-5 py-8 lg:flex lg:flex-col">
-                        <div className="mb-10">
-                            <div className="mb-3">
-                                <Link href={route('dashboard')}>
-                                    <ApplicationLogo className="block w-full" />
-                                </Link>
-                            </div>
-                            <p className="text-xs uppercase tracking-[0.2em] text-slate-400">Clinical Precision</p>
-                        </div>
-
-                        <nav className="space-y-2">
-                            {sideMenu.map((item, idx) =>
-                                item.href ? (
-                                    <Link
-                                        key={item.label}
-                                        href={item.href}
-                                        className={`block w-full rounded-xl px-4 py-3 text-left text-sm font-medium ${
-                                            idx === 0 ? 'bg-emerald-50 text-emerald-700' : 'text-slate-600 hover:bg-slate-100'
-                                        }`}
-                                    >
-                                        {item.label}
-                                    </Link>
-                                ) : (
-                                    <button
-                                        key={item.label}
-                                        type="button"
-                                        className={`w-full rounded-xl px-4 py-3 text-left text-sm font-medium ${
-                                            idx === 0 ? 'bg-emerald-50 text-emerald-700' : 'text-slate-600 hover:bg-slate-100'
-                                        }`}
-                                    >
-                                        {item.label}
-                                    </button>
-                                ),
-                            )}
-                        </nav>
-
-                        <div className="mt-auto space-y-2">
-                            <button type="button" className="w-full rounded-xl bg-white px-4 py-3 text-left text-sm font-medium text-slate-600">
-                                Insights
-                            </button>
-                            <button type="button" className="w-full rounded-xl px-4 py-3 text-left text-sm text-slate-500">
-                                Help
-                            </button>
-                            <button type="button" className="w-full rounded-xl px-4 py-3 text-left text-sm text-slate-500">
-                                Sign out
-                            </button>
-                        </div>
-                    </aside>
+                    <DashboardSidebar active="overview" />
 
                     <main className="flex-1 p-4 sm:p-6 lg:p-8">
                         <header className="mb-6 flex flex-wrap items-center justify-between gap-4 rounded-2xl bg-white px-5 py-4">
-                            <div className="flex items-center gap-6 text-sm font-medium text-slate-600">
-                                <Link href={route('patients')} className="hover:text-slate-900">
-                                    Patients
-                                </Link>
-                                <Link href={route('schedules')} className="hover:text-slate-900">
-                                    Schedules
-                                </Link>
-                                <span>Reports</span>
-                                <span>Inventory</span>
-                            </div>
+                            <AppHeaderNav />
 
                             <div className="flex items-center gap-3">
                                 <ProfileMenu />
@@ -311,20 +242,41 @@ export default function Welcome() {
                             <article className="rounded-2xl bg-white p-5 xl:col-span-2">
                                 <div className="mb-5 flex items-center justify-between">
                                     <h2 className="text-2xl font-semibold text-slate-800">Clinical Journal</h2>
-                                    <button type="button" className="rounded-lg bg-emerald-50 px-3 py-2 text-sm font-semibold text-emerald-700">
+                                    <Link
+                                        href={route('journal')}
+                                        className="rounded-lg bg-emerald-50 px-3 py-2 text-sm font-semibold text-emerald-700 hover:bg-emerald-100"
+                                    >
                                         + New Entry
-                                    </button>
+                                    </Link>
                                 </div>
-                                <div className="mb-8 flex items-center gap-6 text-sm">
-                                    <span className="border-b-2 border-emerald-500 pb-2 font-semibold text-emerald-600">All</span>
-                                    <span className="text-slate-500">Created by me</span>
-                                    <span className="text-slate-500">Assigned to me</span>
-                                </div>
-                                <div className="mx-auto max-w-md rounded-2xl bg-slate-50 p-10 text-center">
-                                    <div className="mx-auto mb-4 h-28 w-28 rounded-2xl bg-slate-200" />
-                                    <h3 className="mb-2 text-2xl font-semibold text-slate-700">Clean slate, doctor.</h3>
-                                    <p className="text-sm text-slate-500">No recent journal entries found. Start a new clinical observation to track patient progress.</p>
-                                </div>
+                                {recentJournalEntries.length === 0 ? (
+                                    <div className="mx-auto max-w-md rounded-2xl bg-slate-50 p-10 text-center">
+                                        <div className="mx-auto mb-4 h-28 w-28 rounded-2xl bg-slate-200" />
+                                        <h3 className="mb-2 text-2xl font-semibold text-slate-700">No care notes yet</h3>
+                                        <p className="text-sm text-slate-500">
+                                            Record daily care notes in the journal to track patient progress.
+                                        </p>
+                                    </div>
+                                ) : (
+                                    <ul className="space-y-3">
+                                        {recentJournalEntries.map((entry) => (
+                                            <li key={entry.id} className="rounded-xl border border-slate-200 p-4">
+                                                <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
+                                                    <p className="font-semibold text-slate-800">{entry.patient?.name}</p>
+                                                    <time dateTime={entry.recordedAt} className="text-xs text-slate-500">
+                                                        {entry.recordedAtLabel}
+                                                    </time>
+                                                </div>
+                                                <p className="line-clamp-2 text-sm text-slate-600">{entry.body}</p>
+                                            </li>
+                                        ))}
+                                        <li>
+                                            <Link href={route('journal')} className="text-sm font-semibold text-emerald-700 hover:text-emerald-800">
+                                                Open full journal →
+                                            </Link>
+                                        </li>
+                                    </ul>
+                                )}
                             </article>
 
                             <article className="rounded-2xl bg-white p-5">

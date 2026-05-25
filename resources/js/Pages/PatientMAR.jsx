@@ -1,5 +1,6 @@
 import { Head, Link } from '@inertiajs/react';
 import ApplicationLogo from '@/Components/ApplicationLogo';
+import AppHeaderNav from '@/Components/AppHeaderNav';
 import ProfileMenu from '@/Components/ProfileMenu';
 
 const sideTabs = [
@@ -56,6 +57,8 @@ export default function PatientMAR({ patientSlug = 'cr-88210' }) {
                                     <Link key={tab.key} href={route('patients.risks', patientSlug)} className="block w-full rounded-lg px-3 py-2.5 text-left text-sm font-medium text-slate-600 hover:bg-slate-100">{tab.label}</Link>
                                 ) : tab.key === 'medication' ? (
                                     <Link key={tab.key} href={route('patients.mar', patientSlug)} className="block w-full rounded-lg bg-emerald-50 px-3 py-2.5 text-left text-sm font-medium text-emerald-700">{tab.label}</Link>
+                                ) : tab.key === 'observations' ? (
+                                    <Link key={tab.key} href={route('patients.observations', patientSlug)} className="block w-full rounded-lg px-3 py-2.5 text-left text-sm font-medium text-slate-600 hover:bg-slate-100">{tab.label}</Link>
                                 ) : tab.key === 'documents' ? (
                                     <Link key={tab.key} href={route('patients.documents', patientSlug)} className="block w-full rounded-lg px-3 py-2.5 text-left text-sm font-medium text-slate-600 hover:bg-slate-100">{tab.label}</Link>
                                 ) : tab.key === 'logs' ? (
@@ -71,12 +74,7 @@ export default function PatientMAR({ patientSlug = 'cr-88210' }) {
 
                     <main className="flex-1 p-4 sm:p-6 lg:p-8">
                         <header className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-2xl bg-white px-5 py-3">
-                            <div className="flex items-center gap-6 text-sm font-medium text-slate-600">
-                                <Link href={route('dashboard')} className="hover:text-slate-900">Dashboard</Link>
-                                <Link href={route('patients')} className="text-slate-900">Patients</Link>
-                                <span>Schedules</span>
-                                <span>Reports</span>
-                            </div>
+                            <AppHeaderNav active="patients" />
                             <div className="flex items-center gap-3">
                                 <ProfileMenu />
                             </div>
