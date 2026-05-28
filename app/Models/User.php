@@ -5,6 +5,7 @@ namespace App\Models;
 // use Illuminate\Contracts\Auth\MustVerifyEmail;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
 use Laravel\Sanctum\HasApiTokens;
@@ -72,5 +73,43 @@ class User extends Authenticatable
     public function staffDocuments(): HasMany
     {
         return $this->hasMany(StaffDocument::class);
+    }
+
+    public function roles(): BelongsToMany
+    {
+        return $this->belongsToMany(Role::class)->withTimestamps();
+    }
+
+    public function hasRole(string $role): bool
+    {
+        $normalizedRole = strtolower(trim($role));
+        if ($normalizedRole === '') {
+            return false;
+        }
+
+        $primaryRole = strtolower(trim((string) $this->primary_role));
+        if ($primaryRole === $normalizedRole) {
+            return true;
+        }
+
+        if ($this->relationLoaded('roles')) {
+            return $this->roles->contains(fn (Role $candidate) => strtolower($candidate->name) === $normalizedRole);
+        }
+
+        return $this->roles()->whereRaw('LOWER(name) = ?', [$normalizedRole])->exists();
+    }
+
+    /**
+     * @param  array<int, string>  $roles
+     */
+    public function hasAnyRole(array $roles): bool
+    {
+        foreach ($roles as $role) {
+            if ($this->hasRole($role)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 }

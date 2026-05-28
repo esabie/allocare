@@ -43,6 +43,21 @@ class AuthenticationTest extends TestCase
         $this->assertGuest();
     }
 
+    public function test_users_with_disabled_mfa_cannot_authenticate(): void
+    {
+        $user = User::factory()->create([
+            'mfa_enabled' => false,
+        ]);
+
+        $response = $this->post('/login', [
+            'email' => $user->email,
+            'password' => 'password',
+        ]);
+
+        $response->assertSessionHasErrors('email');
+        $this->assertGuest();
+    }
+
     public function test_users_can_logout(): void
     {
         $user = User::factory()->create();

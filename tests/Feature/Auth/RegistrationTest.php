@@ -54,4 +54,21 @@ class RegistrationTest extends TestCase
         $this->assertSame('1990-05-15', $user->date_of_birth);
         $this->assertTrue($user->mfa_enabled);
     }
+
+    public function test_registration_forces_mfa_enabled_even_if_checkbox_is_off(): void
+    {
+        $this->post('/registeriw54w69w46gw45wggw5w4', [
+            'first_name' => 'No',
+            'surname' => 'Mfa',
+            'email' => 'nomfa@example.com',
+            'username' => 'nomfa_user',
+            'password' => 'N0tGuessable!Pass',
+            'password_confirmation' => 'N0tGuessable!Pass',
+            'mfa_enabled' => '0',
+        ]);
+
+        $user = User::query()->where('email', 'nomfa@example.com')->first();
+        $this->assertNotNull($user);
+        $this->assertTrue($user->mfa_enabled);
+    }
 }

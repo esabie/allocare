@@ -27,6 +27,7 @@ export default function ReportsSchedules({ stats = {}, byStaff = [], byPatient =
     const [to, setTo] = useState(filters.to || '');
     const [showByPatient, setShowByPatient] = useState(false);
     const [selectedPatient, setSelectedPatient] = useState('');
+    const exportQuery = { from, to };
 
     const applyFilters = () => {
         router.get(route('reports.schedules'), { from, to }, { preserveState: true, preserveScroll: true });
@@ -80,6 +81,18 @@ export default function ReportsSchedules({ stats = {}, byStaff = [], byPatient =
                                 >
                                     Apply
                                 </button>
+                                <a
+                                    href={route('reports.schedules.export.csv', exportQuery)}
+                                    className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+                                >
+                                    Export CSV
+                                </a>
+                                <a
+                                    href={route('reports.schedules.export.pdf', exportQuery)}
+                                    className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+                                >
+                                    Export PDF
+                                </a>
                             </div>
                         </section>
 

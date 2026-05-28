@@ -1232,7 +1232,58 @@ Route::get('/reports', function () {
             ['value' => 'form_snapshot', 'label' => 'Draft forms'],
         ],
     ]);
-})->middleware(['auth', 'verified'])->name('reports');
+})->middleware(['auth', 'verified', 'role:super_admin,admin,care_manager,supervisor'])->name('reports');
+
+Route::get('/reports/export/audit/csv', function () {
+    abort_unless(AuditTrail::canViewReports(request()->user()), 403, 'You do not have permission to view audit reports.');
+
+    $subjectType = request()->query('subject_type');
+    if ($subjectType === 'all' || $subjectType === '') {
+        $subjectType = null;
+    }
+
+    $events = AuditTrail::fetchAuditReportsForUi($subjectType);
+    $filename = 'Allocare-audit-report-'.now()->format('Ymd-His').'.csv';
+
+    return response()->streamDownload(function () use ($events): void {
+        $output = fopen('php://output', 'w');
+        if (! $output) {
+            return;
+        }
+
+        fputcsv($output, ['When', 'User', 'Subject', 'Description', 'Action', 'Path', 'IP']);
+        foreach ($events as $event) {
+            fputcsv($output, [
+                $event['created_at'] ?? '',
+                $event['user_name'] ?? ($event['user_id'] ? 'User #'.$event['user_id'] : 'System'),
+                $event['subject_label'] ?? $event['subject_key'] ?? '-',
+                $event['description'] ?? '',
+                $event['action'] ?? '',
+                $event['request_path'] ?? '',
+                $event['ip_address'] ?? '',
+            ]);
+        }
+
+        fclose($output);
+    }, $filename, ['Content-Type' => 'text/csv']);
+})->middleware(['auth', 'verified'])->name('reports.audit.export.csv');
+
+Route::get('/reports/export/audit/pdf', function () {
+    abort_unless(AuditTrail::canViewReports(request()->user()), 403, 'You do not have permission to view audit reports.');
+
+    $subjectType = request()->query('subject_type');
+    if ($subjectType === 'all' || $subjectType === '') {
+        $subjectType = null;
+    }
+
+    $events = AuditTrail::fetchAuditReportsForUi($subjectType);
+    $pdf = \Barryvdh\DomPDF\Facade\Pdf::loadView('reports.audit-pdf', [
+        'events' => $events,
+        'subjectType' => $subjectType ?? 'all',
+    ])->setPaper('a4', 'landscape');
+
+    return $pdf->download('Allocare-audit-report-'.now()->format('Ymd-His').'.pdf');
+})->middleware(['auth', 'verified'])->name('reports.audit.export.pdf');
 
 Route::get('/admin/activity-logs', function () {
     abort_unless(AuditTrail::canViewActivityLog(request()->user()), 403, 'You do not have permission to view activity logs.');
@@ -1402,7 +1453,7 @@ Route::post('/patients', function () {
     ]);
 
     return redirect()->route('patients')->with('success', 'Patient created successfully.');
-})->middleware(['auth', 'verified'])->name('patients.store');
+})->middleware(['auth', 'verified', 'role:super_admin,admin,care_manager'])->name('patients.store');
 
 Route::get('/patients/{patient}', function (string $patient) {
     $record = Patient::query()->where('url_key', $patient)->firstOrFail();
@@ -1532,7 +1583,7 @@ Route::patch('/patients/{patient}/rag-status', function (Request $request, strin
     );
 
     return redirect()->back();
-})->middleware(['auth', 'verified'])->name('patients.rag-status');
+})->middleware(['auth', 'verified', 'role:super_admin,admin,care_manager'])->name('patients.rag-status');
 
 Route::get('/patients/{patient}/observations', function (string $patient) {
     $record = Patient::query()->where('url_key', $patient)->firstOrFail();
@@ -1709,7 +1760,7 @@ Route::post('/patients/{patient}/care-plans/{plan}', function (string $patient, 
     );
 
     return redirect()->back()->with('success', 'Care plan saved successfully.');
-})->middleware(['auth', 'verified'])->name('patients.careplans.save');
+})->middleware(['auth', 'verified', 'role:super_admin,admin,care_manager'])->name('patients.careplans.save');
 
 Route::get('/patients/{patient}/risk-assessments', function (string $patient) {
     return Inertia::render('PatientRiskAssessments', [
@@ -1975,7 +2026,7 @@ Route::post('/patients/{patient}/mar/{mar}', function (string $patient, string $
     );
 
     return redirect()->back()->with('success', 'eMAR saved successfully.');
-})->middleware(['auth', 'verified'])->name('patients.mar.save');
+})->middleware(['auth', 'verified', 'role:super_admin,admin,care_manager,supervisor,care_worker'])->name('patients.mar.save');
 
 Route::post('/patients/{patient}/medications', function (string $patient) {
     $record = Patient::query()->where('url_key', $patient)->firstOrFail();
@@ -2060,7 +2111,7 @@ Route::post('/patients/{patient}/medications', function (string $patient) {
     );
 
     return redirect()->back()->with('success', 'Medication added successfully.');
-})->middleware(['auth', 'verified'])->name('patients.medications.store');
+})->middleware(['auth', 'verified', 'role:super_admin,admin,care_manager,supervisor,care_worker'])->name('patients.medications.store');
 
 Route::patch('/patients/{patient}/medications/{medication}', function (string $patient, int $medication) {
     $record = Patient::query()->where('url_key', $patient)->firstOrFail();
@@ -2086,7 +2137,7 @@ Route::patch('/patients/{patient}/medications/{medication}', function (string $p
     );
 
     return redirect()->back()->with('success', 'Medication updated.');
-})->middleware(['auth', 'verified'])->name('patients.medications.update');
+})->middleware(['auth', 'verified', 'role:super_admin,admin,care_manager,supervisor,care_worker'])->name('patients.medications.update');
 
 Route::get('/patients/{patient}/documents', function (string $patient) {
     return Inertia::render('PatientDocuments', [
@@ -2146,7 +2197,7 @@ Route::post('/patients/{patient}/documents/{document}', function (string $patien
     );
 
     return redirect()->back()->with('success', 'Document saved successfully.');
-})->middleware(['auth', 'verified'])->name('patients.documents.save');
+})->middleware(['auth', 'verified', 'role:super_admin,admin,care_manager,supervisor,care_worker'])->name('patients.documents.save');
 
 Route::get('/patients/{patient}/incidents/create', function (string $patient) {
     $record = Patient::query()->where('url_key', $patient)->firstOrFail();
@@ -2281,7 +2332,7 @@ Route::post('/patients/{patient}/vitals', function (string $patient) {
     );
 
     return redirect()->back()->with('success', 'Clinical observation recorded successfully.');
-})->middleware(['auth', 'verified'])->name('patients.vitals.store');
+})->middleware(['auth', 'verified', 'role:super_admin,admin,care_manager,supervisor,care_worker'])->name('patients.vitals.store');
 
 Route::get('/patients/{patient}/logs', function (string $patient) {
     abort_unless(AuditTrail::canViewReports(request()->user()), 403, 'You do not have permission to view audit history.');
@@ -2414,7 +2465,7 @@ Route::patch('/employees/{user}/account-status', function (User $user) {
     );
 
     return redirect()->route('employees')->with('success', 'Employee account status updated.');
-})->middleware(['auth', 'verified'])->name('employees.account-status');
+})->middleware(['auth', 'verified', 'role:super_admin,admin'])->name('employees.account-status');
 
 Route::get('/employees/{user}/photo', function (User $user) {
     abort_unless($user->photo_path && Storage::disk('public')->exists($user->photo_path), 404);
@@ -2427,7 +2478,7 @@ Route::get('/employees/create', function () {
     return Inertia::render('EmployeesCreate', [
         'initialSnapshot' => $snapshot?->data ?? [],
     ]);
-})->middleware(['auth', 'verified'])->name('employees.create');
+})->middleware(['auth', 'verified', 'role:super_admin,admin'])->name('employees.create');
 
 Route::post('/employees', function () {
     $payload = request()->validate([
@@ -2487,7 +2538,7 @@ Route::post('/employees', function () {
     FormSnapshot::query()->where('form_key', 'employee-create')->delete();
 
     return redirect()->route('employees')->with('success', 'Employee created successfully.');
-})->middleware(['auth', 'verified'])->name('employees.store');
+})->middleware(['auth', 'verified', 'role:super_admin,admin'])->name('employees.store');
 
 Route::get('/employees/{user}/profile', function (User $user) {
     $roleLabel = $user->primary_role
@@ -2565,7 +2616,7 @@ Route::get('/employees/{user}/profile', function (User $user) {
                 'created_at' => optional($d->created_at)->format('Y-m-d'),
             ]),
     ]);
-})->middleware(['auth', 'verified'])->name('employees.profile');
+})->middleware(['auth', 'verified', 'role:super_admin,admin,care_manager,supervisor'])->name('employees.profile');
 
 Route::put('/employees/{user}', function (User $user) {
     $payload = request()->validate([
@@ -2600,7 +2651,7 @@ Route::put('/employees/{user}', function (User $user) {
     );
 
     return redirect()->route('employees.profile', $user)->with('success', 'Profile updated successfully.');
-})->middleware(['auth', 'verified'])->name('employees.update');
+})->middleware(['auth', 'verified', 'role:super_admin,care_manager'])->name('employees.update');
 
 Route::post('/employees/{user}/training', function (User $user) {
     $payload = request()->validate([
@@ -2618,7 +2669,7 @@ Route::post('/employees/{user}/training', function (User $user) {
     AuditTrail::record('created', "Added training '{$payload['course_name']}' for {$employeeName}", 'training', (string) $user->id, $employeeName);
 
     return redirect()->route('employees.profile', $user)->with('success', 'Training record added.');
-})->middleware(['auth', 'verified'])->name('employees.training.store');
+})->middleware(['auth', 'verified', 'role:super_admin,care_manager'])->name('employees.training.store');
 
 Route::post('/employees/{user}/competencies', function (User $user) {
     $payload = request()->validate([
@@ -2637,7 +2688,7 @@ Route::post('/employees/{user}/competencies', function (User $user) {
     AuditTrail::record('created', "Added competency '{$payload['skill_name']}' for {$employeeName}", 'competency', (string) $user->id, $employeeName);
 
     return redirect()->route('employees.profile', $user)->with('success', 'Competency record added.');
-})->middleware(['auth', 'verified'])->name('employees.competencies.store');
+})->middleware(['auth', 'verified', 'role:super_admin,care_manager'])->name('employees.competencies.store');
 
 Route::post('/employees/{user}/supervisions', function (User $user) {
     $payload = request()->validate([
@@ -2656,7 +2707,7 @@ Route::post('/employees/{user}/supervisions', function (User $user) {
     AuditTrail::record('created', "Scheduled supervision for {$employeeName}", 'supervision', (string) $user->id, $employeeName);
 
     return redirect()->route('employees.profile', $user)->with('success', 'Supervision record added.');
-})->middleware(['auth', 'verified'])->name('employees.supervisions.store');
+})->middleware(['auth', 'verified', 'role:super_admin,care_manager'])->name('employees.supervisions.store');
 
 Route::post('/employees/{user}/documents', function (User $user) {
     $payload = request()->validate([
@@ -2683,14 +2734,14 @@ Route::post('/employees/{user}/documents', function (User $user) {
     AuditTrail::record('created', "Uploaded document '{$payload['title']}' for {$employeeName}", 'staff_document', (string) $user->id, $employeeName);
 
     return redirect()->route('employees.profile', $user)->with('success', 'Document uploaded.');
-})->middleware(['auth', 'verified'])->name('employees.documents.store');
+})->middleware(['auth', 'verified', 'role:super_admin,care_manager'])->name('employees.documents.store');
 
 Route::get('/employees/{user}/documents/{document}/download', function (User $user, StaffDocument $document) {
     abort_unless($document->user_id === $user->id, 404);
     abort_unless(Storage::disk('public')->exists($document->file_path), 404);
 
     return Storage::disk('public')->download($document->file_path, $document->file_name);
-})->middleware(['auth', 'verified'])->name('employees.documents.download');
+})->middleware(['auth', 'verified', 'role:super_admin,admin,care_manager,supervisor'])->name('employees.documents.download');
 
 Route::post('/form-snapshots/{formKey}', function (string $formKey) {
     $payload = request()->validate([
@@ -2873,6 +2924,74 @@ Route::get('/reports/medications', function () {
     ]);
 })->middleware(['auth', 'verified'])->name('reports.medications');
 
+Route::get('/reports/medications/export/csv', function () {
+    if (! AuditTrail::canViewReports(request()->user())) {
+        abort(403);
+    }
+
+    $fromParam = request('from');
+    $toParam = request('to');
+    $from = $fromParam ? Carbon::parse($fromParam)->startOfDay() : now()->subDays(30)->startOfDay();
+    $to = $toParam ? Carbon::parse($toParam)->endOfDay() : now()->endOfDay();
+
+    $administrations = MedicationAdministration::query()
+        ->whereBetween('created_at', [$from, $to])
+        ->with(['medication:id,name,is_controlled,is_prn', 'patient:id,name,url_key', 'administeredBy:id,name'])
+        ->orderByDesc('created_at')
+        ->get();
+
+    $filename = 'Allocare-medication-report-'.now()->format('Ymd-His').'.csv';
+
+    return response()->streamDownload(function () use ($administrations): void {
+        $output = fopen('php://output', 'w');
+        if (! $output) {
+            return;
+        }
+
+        fputcsv($output, ['Patient', 'Medication', 'Status', 'Administered By', 'Administered At', 'Reason', 'Witness', 'Controlled', 'PRN']);
+        foreach ($administrations as $a) {
+            fputcsv($output, [
+                $a->patient?->name ?? '-',
+                $a->medication?->name ?? '-',
+                $a->status,
+                $a->administeredBy?->name ?? '-',
+                $a->administered_at?->format('d M Y H:i') ?? '-',
+                $a->reason ?? '',
+                $a->witness_name ?? '',
+                $a->medication?->is_controlled ? 'Yes' : 'No',
+                $a->medication?->is_prn ? 'Yes' : 'No',
+            ]);
+        }
+        fclose($output);
+    }, $filename, ['Content-Type' => 'text/csv']);
+})->middleware(['auth', 'verified'])->name('reports.medications.export.csv');
+
+Route::get('/reports/medications/export/pdf', function () {
+    if (! AuditTrail::canViewReports(request()->user())) {
+        abort(403);
+    }
+
+    $fromParam = request('from');
+    $toParam = request('to');
+    $from = $fromParam ? Carbon::parse($fromParam)->startOfDay() : now()->subDays(30)->startOfDay();
+    $to = $toParam ? Carbon::parse($toParam)->endOfDay() : now()->endOfDay();
+
+    $administrations = MedicationAdministration::query()
+        ->whereBetween('created_at', [$from, $to])
+        ->with(['medication:id,name,is_controlled,is_prn', 'patient:id,name,url_key', 'administeredBy:id,name'])
+        ->orderByDesc('created_at')
+        ->limit(250)
+        ->get();
+
+    $pdf = \Barryvdh\DomPDF\Facade\Pdf::loadView('reports.medications-pdf', [
+        'from' => $from,
+        'to' => $to,
+        'administrations' => $administrations,
+    ])->setPaper('a4', 'landscape');
+
+    return $pdf->download('Allocare-medication-report-'.now()->format('Ymd-His').'.pdf');
+})->middleware(['auth', 'verified'])->name('reports.medications.export.pdf');
+
 Route::get('/reports/schedules', function () {
     if (!AuditTrail::canViewReports(request()->user())) {
         abort(403);
@@ -2963,6 +3082,362 @@ Route::get('/reports/schedules', function () {
     ]);
 })->middleware(['auth', 'verified'])->name('reports.schedules');
 
+Route::get('/reports/schedules/export/csv', function () {
+    if (! AuditTrail::canViewReports(request()->user())) {
+        abort(403);
+    }
+
+    $fromParam = request('from');
+    $toParam = request('to');
+    $from = $fromParam ? Carbon::parse($fromParam)->startOfDay() : now()->subDays(30)->startOfDay();
+    $to = $toParam ? Carbon::parse($toParam)->endOfDay() : now()->endOfDay();
+
+    $schedules = PatientSchedule::query()
+        ->whereBetween('start_at', [$from, $to])
+        ->with(['patient:id,name,url_key', 'assignedUser:id,name'])
+        ->orderByDesc('start_at')
+        ->get();
+
+    $filename = 'Allocare-schedule-report-'.now()->format('Ymd-His').'.csv';
+
+    return response()->streamDownload(function () use ($schedules): void {
+        $output = fopen('php://output', 'w');
+        if (! $output) {
+            return;
+        }
+
+        fputcsv($output, ['Date', 'Start', 'End', 'Patient', 'Carer', 'Duration (mins)', 'Status']);
+        foreach ($schedules as $s) {
+            fputcsv($output, [
+                $s->start_at?->format('d M Y'),
+                $s->start_at?->format('H:i'),
+                $s->end_at?->format('H:i'),
+                $s->patient?->name ?? '-',
+                $s->assignedUser?->name ?? '-',
+                $s->start_at && $s->end_at ? $s->start_at->diffInMinutes($s->end_at) : 0,
+                $s->status ?? 'in_progress',
+            ]);
+        }
+        fclose($output);
+    }, $filename, ['Content-Type' => 'text/csv']);
+})->middleware(['auth', 'verified'])->name('reports.schedules.export.csv');
+
+Route::get('/reports/schedules/export/pdf', function () {
+    if (! AuditTrail::canViewReports(request()->user())) {
+        abort(403);
+    }
+
+    $fromParam = request('from');
+    $toParam = request('to');
+    $from = $fromParam ? Carbon::parse($fromParam)->startOfDay() : now()->subDays(30)->startOfDay();
+    $to = $toParam ? Carbon::parse($toParam)->endOfDay() : now()->endOfDay();
+
+    $schedules = PatientSchedule::query()
+        ->whereBetween('start_at', [$from, $to])
+        ->with(['patient:id,name,url_key', 'assignedUser:id,name'])
+        ->orderByDesc('start_at')
+        ->limit(250)
+        ->get();
+
+    $pdf = \Barryvdh\DomPDF\Facade\Pdf::loadView('reports.schedules-pdf', [
+        'from' => $from,
+        'to' => $to,
+        'schedules' => $schedules,
+    ])->setPaper('a4', 'landscape');
+
+    return $pdf->download('Allocare-schedule-report-'.now()->format('Ymd-His').'.pdf');
+})->middleware(['auth', 'verified'])->name('reports.schedules.export.pdf');
+
+if (! function_exists('build_compliance_training_report_payload')) {
+    function build_compliance_training_report_payload(): array
+    {
+        $selectedRole = strtolower(trim((string) request('role', 'all')));
+        $selectedRisk = strtolower(trim((string) request('risk', 'all')));
+        $today = Carbon::today();
+        $now = Carbon::now();
+
+        $users = User::query()
+            ->with([
+                'trainingRecords:id,user_id,expiry_date,status',
+                'competencies:id,user_id,next_review_date,status',
+                'supervisions:id,user_id,next_due_date,status,scheduled_date,completed_date',
+                'staffDocuments:id,user_id,expiry_date,category',
+            ])
+            ->get();
+
+        $staffRows = $users->map(function (User $user) use ($today) {
+            $staffName = trim((string) ($user->name ?: (($user->first_name ?? '').' '.($user->surname ?? ''))));
+            $staffName = $staffName !== '' ? $staffName : 'Staff #'.$user->id;
+
+            $roleValue = strtolower(trim((string) ($user->primary_role ?? '')));
+            $roleLabel = $roleValue !== '' ? Str::of($roleValue)->replace('_', ' ')->title()->toString() : 'Unassigned';
+
+            $trainingRecords = $user->trainingRecords;
+            $trainingCount = $trainingRecords->count();
+            $trainingExpired = $trainingRecords->filter(fn ($record) => $record->expiry_date && $record->expiry_date->lt($today))->count();
+            $trainingDueSoon = $trainingRecords->filter(fn ($record) => $record->expiry_date && $record->expiry_date->betweenIncluded($today, $today->copy()->addDays(30)))->count();
+
+            $competencies = $user->competencies;
+            $competencyCount = $competencies->count();
+            $competencyOverdue = $competencies->filter(fn ($row) => $row->next_review_date && $row->next_review_date->lt($today))->count();
+            $competencyDueSoon = $competencies->filter(fn ($row) => $row->next_review_date && $row->next_review_date->betweenIncluded($today, $today->copy()->addDays(30)))->count();
+
+            $supervisions = $user->supervisions;
+            $supervisionCount = $supervisions->count();
+            $supervisionOverdue = $supervisions
+                ->filter(fn ($row) => ($row->status === 'overdue') || ($row->next_due_date && $row->next_due_date->lt($today)))
+                ->count();
+            $supervisionDueSoon = $supervisions
+                ->filter(fn ($row) => $row->next_due_date && $row->next_due_date->betweenIncluded($today, $today->copy()->addDays(30)))
+                ->count();
+
+            $documents = $user->staffDocuments;
+            $documentCount = $documents->count();
+            $documentExpired = $documents->filter(fn ($row) => $row->expiry_date && $row->expiry_date->lt($today))->count();
+            $documentDueSoon = $documents->filter(fn ($row) => $row->expiry_date && $row->expiry_date->betweenIncluded($today, $today->copy()->addDays(30)))->count();
+
+            $dbsExpiryDate = $user->dbs_expiry_date ? Carbon::parse($user->dbs_expiry_date) : null;
+            $dbsMissing = $dbsExpiryDate === null;
+            $dbsExpired = $dbsExpiryDate !== null && $dbsExpiryDate->lt($today);
+            $dbsDueSoon = $dbsExpiryDate !== null && $dbsExpiryDate->betweenIncluded($today, $today->copy()->addDays(30));
+
+            $missingEvidenceCount = 0;
+            if ($trainingCount === 0) {
+                $missingEvidenceCount++;
+            }
+            if ($competencyCount === 0) {
+                $missingEvidenceCount++;
+            }
+            if ($supervisionCount === 0) {
+                $missingEvidenceCount++;
+            }
+            if ($documentCount === 0) {
+                $missingEvidenceCount++;
+            }
+            if ($dbsMissing) {
+                $missingEvidenceCount++;
+            }
+
+            $criticalOverdueCount = $trainingExpired + $competencyOverdue + $supervisionOverdue + $documentExpired + ($dbsExpired ? 1 : 0);
+            $dueSoonCount = $trainingDueSoon + $competencyDueSoon + $supervisionDueSoon + $documentDueSoon + ($dbsDueSoon ? 1 : 0);
+
+            $risk = 'green';
+            if ($criticalOverdueCount > 0 || $dbsMissing) {
+                $risk = 'red';
+            } elseif ($dueSoonCount > 0 || $missingEvidenceCount > 0) {
+                $risk = 'amber';
+            }
+
+            $expiringDates = collect([
+                ...$trainingRecords->pluck('expiry_date')->filter()->all(),
+                ...$competencies->pluck('next_review_date')->filter()->all(),
+                ...$supervisions->pluck('next_due_date')->filter()->all(),
+                ...$documents->pluck('expiry_date')->filter()->all(),
+                $dbsExpiryDate,
+            ])->filter();
+
+            $nextDueDate = $expiringDates
+                ->map(fn ($date) => Carbon::parse($date))
+                ->filter(fn (Carbon $date) => $date->gte($today))
+                ->sort()
+                ->first();
+
+            $actions = collect();
+            if ($dbsMissing) {
+                $actions->push(['message' => 'Upload missing DBS evidence', 'due_date' => null]);
+            } elseif ($dbsExpired) {
+                $actions->push(['message' => 'Renew expired DBS check', 'due_date' => $dbsExpiryDate?->toDateString()]);
+            } elseif ($dbsDueSoon) {
+                $actions->push(['message' => 'Plan DBS renewal', 'due_date' => $dbsExpiryDate?->toDateString()]);
+            }
+            if ($trainingExpired > 0) {
+                $actions->push(['message' => "Complete {$trainingExpired} expired training item(s)", 'due_date' => $nextDueDate?->toDateString()]);
+            }
+            if ($supervisionOverdue > 0) {
+                $actions->push(['message' => "Schedule {$supervisionOverdue} overdue supervision(s)", 'due_date' => $nextDueDate?->toDateString()]);
+            }
+            if ($documentExpired > 0) {
+                $actions->push(['message' => "Replace {$documentExpired} expired document(s)", 'due_date' => $nextDueDate?->toDateString()]);
+            }
+            if ($actions->isEmpty() && $dueSoonCount > 0) {
+                $actions->push(['message' => "Review {$dueSoonCount} item(s) due in 30 days", 'due_date' => $nextDueDate?->toDateString()]);
+            }
+            if ($actions->isEmpty() && $missingEvidenceCount > 0) {
+                $actions->push(['message' => 'Upload missing compliance evidence', 'due_date' => null]);
+            }
+
+            return [
+                'id' => $user->id,
+                'staff_name' => $staffName,
+                'role_value' => $roleValue !== '' ? $roleValue : 'unassigned',
+                'role_label' => $roleLabel,
+                'risk' => $risk,
+                'critical_overdue_count' => $criticalOverdueCount,
+                'due_soon_count' => $dueSoonCount,
+                'missing_evidence_count' => $missingEvidenceCount,
+                'training_summary' => "{$trainingCount} total / {$trainingExpired} overdue / {$trainingDueSoon} due soon",
+                'competency_summary' => "{$competencyCount} total / {$competencyOverdue} overdue / {$competencyDueSoon} due soon",
+                'supervision_summary' => "{$supervisionCount} total / {$supervisionOverdue} overdue / {$supervisionDueSoon} due soon",
+                'dbs_summary' => $dbsMissing
+                    ? 'Missing evidence'
+                    : ($dbsExpired ? 'Expired' : ($dbsDueSoon ? 'Due soon' : 'Valid')),
+                'documents_summary' => "{$documentCount} total / {$documentExpired} expired / {$documentDueSoon} due soon",
+                'actions' => $actions->values()->all(),
+                'expiring_dates' => $expiringDates
+                    ->map(fn ($date) => Carbon::parse($date)->toDateString())
+                    ->values()
+                    ->all(),
+            ];
+        });
+
+        if ($selectedRole !== 'all') {
+            $staffRows = $staffRows->where('role_value', $selectedRole)->values();
+        }
+        if (in_array($selectedRisk, ['green', 'amber', 'red'], true)) {
+            $staffRows = $staffRows->where('risk', $selectedRisk)->values();
+        }
+
+        $totalStaff = $staffRows->count();
+        $fullyCompliant = $staffRows->where('risk', 'green')->count();
+        $dueSoon = $staffRows->where('risk', 'amber')->count();
+        $overdueCritical = $staffRows->where('risk', 'red')->count();
+        $missingEvidence = $staffRows->sum('missing_evidence_count');
+        $complianceRate = $totalStaff > 0 ? round(($fullyCompliant / $totalStaff) * 100, 1) : 0;
+
+        $allExpiringDates = $staffRows->flatMap(fn ($row) => $row['expiring_dates'] ?? []);
+        $expiryWindows = [
+            'days7' => $allExpiringDates->filter(function ($rawDate) use ($now) {
+                $days = $now->diffInDays(Carbon::parse($rawDate), false);
+                return $days >= 0 && $days <= 7;
+            })->count(),
+            'days30' => $allExpiringDates->filter(function ($rawDate) use ($now) {
+                $days = $now->diffInDays(Carbon::parse($rawDate), false);
+                return $days >= 0 && $days <= 30;
+            })->count(),
+            'days60' => $allExpiringDates->filter(function ($rawDate) use ($now) {
+                $days = $now->diffInDays(Carbon::parse($rawDate), false);
+                return $days >= 0 && $days <= 60;
+            })->count(),
+            'days90' => $allExpiringDates->filter(function ($rawDate) use ($now) {
+                $days = $now->diffInDays(Carbon::parse($rawDate), false);
+                return $days >= 0 && $days <= 90;
+            })->count(),
+        ];
+
+        $actions = $staffRows
+            ->flatMap(function ($row) {
+                return collect($row['actions'])->map(fn ($action) => [
+                    'user_id' => $row['id'],
+                    'staff_name' => $row['staff_name'],
+                    'role_label' => $row['role_label'],
+                    'risk' => $row['risk'],
+                    'message' => $action['message'],
+                    'due_date' => $action['due_date'],
+                ]);
+            })
+            ->sortBy([
+                fn ($item) => $item['risk'] === 'red' ? 0 : ($item['risk'] === 'amber' ? 1 : 2),
+                fn ($item) => $item['due_date'] ?? '9999-12-31',
+            ])
+            ->take(50)
+            ->values();
+
+        $roleOptions = $users
+            ->map(fn (User $user) => strtolower(trim((string) ($user->primary_role ?? ''))))
+            ->filter(fn ($role) => $role !== '')
+            ->unique()
+            ->sort()
+            ->values()
+            ->map(fn ($role) => [
+                'value' => $role,
+                'label' => Str::of($role)->replace('_', ' ')->title()->toString(),
+            ]);
+
+        return [
+            'stats' => [
+                'totalStaff' => $totalStaff,
+                'fullyCompliant' => $fullyCompliant,
+                'dueSoon' => $dueSoon,
+                'overdueCritical' => $overdueCritical,
+                'complianceRate' => $complianceRate,
+                'missingEvidence' => $missingEvidence,
+            ],
+            'riskSummary' => [
+                'green' => $fullyCompliant,
+                'amber' => $dueSoon,
+                'red' => $overdueCritical,
+            ],
+            'expiryWindows' => $expiryWindows,
+            'staffRows' => $staffRows
+                ->map(fn ($row) => collect($row)->except(['actions', 'expiring_dates'])->all())
+                ->values(),
+            'actions' => $actions,
+            'filters' => [
+                'role' => $selectedRole,
+                'risk' => $selectedRisk,
+            ],
+            'roleOptions' => $roleOptions,
+        ];
+    }
+}
+
+Route::get('/reports/compliance-training', function () {
+    if (! AuditTrail::canViewReports(request()->user())) {
+        abort(403);
+    }
+
+    return Inertia::render('ReportsComplianceTraining', build_compliance_training_report_payload());
+})->middleware(['auth', 'verified'])->name('reports.compliance-training');
+
+Route::get('/reports/compliance-training/export/csv', function () {
+    if (! AuditTrail::canViewReports(request()->user())) {
+        abort(403);
+    }
+
+    $payload = build_compliance_training_report_payload();
+    $filename = 'Allocare-compliance-training-report-'.now()->format('Ymd-His').'.csv';
+
+    return response()->streamDownload(function () use ($payload): void {
+        $output = fopen('php://output', 'w');
+        if (! $output) {
+            return;
+        }
+
+        fputcsv($output, ['Staff Name', 'Role', 'Risk', 'Training', 'Competencies', 'Supervisions', 'DBS', 'Documents']);
+        foreach ($payload['staffRows'] as $row) {
+            $risk = strtolower((string) ($row['risk'] ?? ''));
+            $riskLabel = match ($risk) {
+                'red' => 'High',
+                'amber' => 'Medium',
+                default => 'Low',
+            };
+
+            fputcsv($output, [
+                $row['staff_name'],
+                $row['role_label'],
+                $riskLabel,
+                $row['training_summary'],
+                $row['competency_summary'],
+                $row['supervision_summary'],
+                $row['dbs_summary'],
+                $row['documents_summary'],
+            ]);
+        }
+        fclose($output);
+    }, $filename, ['Content-Type' => 'text/csv']);
+})->middleware(['auth', 'verified'])->name('reports.compliance-training.export.csv');
+
+Route::get('/reports/compliance-training/export/pdf', function () {
+    if (! AuditTrail::canViewReports(request()->user())) {
+        abort(403);
+    }
+
+    $payload = build_compliance_training_report_payload();
+    $pdf = \Barryvdh\DomPDF\Facade\Pdf::loadView('reports.compliance-training-pdf', $payload)->setPaper('a4', 'landscape');
+
+    return $pdf->download('Allocare-compliance-training-report-'.now()->format('Ymd-His').'.pdf');
+})->middleware(['auth', 'verified'])->name('reports.compliance-training.export.pdf');
+
 Route::get('/reports/incidents', function () {
     if (!AuditTrail::canViewReports(request()->user())) {
         abort(403);
@@ -3011,6 +3486,89 @@ Route::get('/reports/incidents', function () {
         ],
     ]);
 })->middleware(['auth', 'verified'])->name('reports.incidents');
+
+Route::get('/reports/incidents/export/csv', function () {
+    if (! AuditTrail::canViewReports(request()->user())) {
+        abort(403);
+    }
+
+    $incidents = FormSnapshot::query()
+        ->where('form_key', 'like', 'incident:%')
+        ->orderByDesc('updated_at')
+        ->get()
+        ->map(function ($snapshot) {
+            $data = $snapshot->data ?? [];
+            $patientUrlKey = str_replace('incident:', '', $snapshot->form_key);
+            $patient = Patient::query()->where('url_key', $patientUrlKey)->first();
+            $reporter = $snapshot->updated_by_user_id ? User::find($snapshot->updated_by_user_id) : null;
+
+            return [
+                'title' => $data['incidentTitle'] ?? '-',
+                'patient' => $patient?->name ?? $patientUrlKey,
+                'reporter' => $reporter?->name ?? ($data['reporterName'] ?? 'Unknown'),
+                'incident_date' => $data['incidentDate'] ?? $snapshot->updated_at->format('Y-m-d'),
+                'incident_time' => $data['incidentTime'] ?? '-',
+                'status' => $data['status'] ?? 'Submitted',
+                'submitted_at' => $snapshot->updated_at->format('d M Y H:i'),
+            ];
+        });
+
+    $filename = 'Allocare-incident-report-'.now()->format('Ymd-His').'.csv';
+    return response()->streamDownload(function () use ($incidents): void {
+        $output = fopen('php://output', 'w');
+        if (! $output) {
+            return;
+        }
+
+        fputcsv($output, ['Title', 'Patient', 'Reporter', 'Incident Date', 'Incident Time', 'Status', 'Submitted']);
+        foreach ($incidents as $incident) {
+            fputcsv($output, [
+                $incident['title'],
+                $incident['patient'],
+                $incident['reporter'],
+                $incident['incident_date'],
+                $incident['incident_time'],
+                $incident['status'],
+                $incident['submitted_at'],
+            ]);
+        }
+        fclose($output);
+    }, $filename, ['Content-Type' => 'text/csv']);
+})->middleware(['auth', 'verified'])->name('reports.incidents.export.csv');
+
+Route::get('/reports/incidents/export/pdf', function () {
+    if (! AuditTrail::canViewReports(request()->user())) {
+        abort(403);
+    }
+
+    $incidents = FormSnapshot::query()
+        ->where('form_key', 'like', 'incident:%')
+        ->orderByDesc('updated_at')
+        ->limit(250)
+        ->get()
+        ->map(function ($snapshot) {
+            $data = $snapshot->data ?? [];
+            $patientUrlKey = str_replace('incident:', '', $snapshot->form_key);
+            $patient = Patient::query()->where('url_key', $patientUrlKey)->first();
+            $reporter = $snapshot->updated_by_user_id ? User::find($snapshot->updated_by_user_id) : null;
+
+            return [
+                'title' => $data['incidentTitle'] ?? '-',
+                'patient' => $patient?->name ?? $patientUrlKey,
+                'reporter' => $reporter?->name ?? ($data['reporterName'] ?? 'Unknown'),
+                'incident_date' => $data['incidentDate'] ?? $snapshot->updated_at->format('Y-m-d'),
+                'incident_time' => $data['incidentTime'] ?? '-',
+                'status' => $data['status'] ?? 'Submitted',
+                'submitted_at' => $snapshot->updated_at->format('d M Y H:i'),
+            ];
+        });
+
+    $pdf = \Barryvdh\DomPDF\Facade\Pdf::loadView('reports.incidents-pdf', [
+        'incidents' => $incidents,
+    ])->setPaper('a4', 'landscape');
+
+    return $pdf->download('Allocare-incident-report-'.now()->format('Ymd-His').'.pdf');
+})->middleware(['auth', 'verified'])->name('reports.incidents.export.pdf');
 
 Route::get('/reports/incidents/{id}', function (int $id) {
     if (!AuditTrail::canViewReports(request()->user())) {

@@ -24,9 +24,7 @@ class AuditTrail
             return false;
         }
 
-        $role = strtolower(str_replace(' ', '_', trim((string) $user->primary_role)));
-
-        return in_array($role, self::REPORT_VIEW_ROLES, true);
+        return $user->hasAnyRole(self::REPORT_VIEW_ROLES);
     }
 
     public static function canViewActivityLog(?User $user): bool

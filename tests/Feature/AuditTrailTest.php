@@ -5,6 +5,7 @@ namespace Tests\Feature;
 use App\Models\AuditEvent;
 use App\Models\User;
 use App\Models\UserActivityLog;
+use App\Support\AuditTrail;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
 
@@ -123,5 +124,27 @@ class AuditTrailTest extends TestCase
         $this->assertStringContainsString('Registered patient', $event->description);
 
         $this->assertGreaterThan(0, UserActivityLog::query()->count());
+    }
+
+    public function test_audit_events_are_immutable_after_insert(): void
+    {
+        $user = User::factory()->create([
+            'primary_role' => 'admin',
+            'email_verified_at' => now(),
+        ]);
+
+        $this->actingAs($user);
+        AuditTrail::record('created', 'Created immutable event', 'system', 'test-key', 'Test');
+
+        $event = AuditEvent::query()->latest('id')->firstOrFail();
+        $event->description = 'Mutated description';
+        $event->save();
+        $event->refresh();
+
+        $this->assertSame('Created immutable event', $event->description);
+
+        $deleted = $event->delete();
+        $this->assertFalse($deleted);
+        $this->assertDatabaseHas('audit_events', ['id' => $event->id]);
     }
 }

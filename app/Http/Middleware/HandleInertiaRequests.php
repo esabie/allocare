@@ -42,6 +42,7 @@ class HandleInertiaRequests extends Middleware
                     'first_name' => $authUser->first_name,
                     'surname' => $authUser->surname,
                     'primary_role' => $authUser->primary_role,
+                    'roles' => $authUser->roles()->pluck('name')->values(),
                     'photo_path' => $authUser->photo_path,
                     'photoUrl' => $authUser->photo_path ? route('employees.photo', $authUser) : null,
                     'canViewReports' => AuditTrail::canViewReports($authUser),

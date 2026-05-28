@@ -66,7 +66,15 @@ export default function EmployeeProfile({
     supervisions = [],
     documents = [],
 }) {
-    const { flash = {}, errors: serverErrors = {} } = usePage().props;
+    const { flash = {}, errors: serverErrors = {}, auth = {} } = usePage().props;
+    const authUser = auth?.user || {};
+    const normalizedRoles = [
+        authUser?.primary_role,
+        ...(Array.isArray(authUser?.roles) ? authUser.roles : []),
+    ]
+        .map((role) => String(role || '').trim().toLowerCase())
+        .filter(Boolean);
+    const canEditStaffInfo = normalizedRoles.includes('super_admin') || normalizedRoles.includes('care_manager');
     const [activeTab, setActiveTab] = useState('Profile');
     const [editing, setEditing] = useState(false);
     const [form, setForm] = useState({
@@ -212,16 +220,16 @@ export default function EmployeeProfile({
 
                         {activeTab === 'Profile' && (
                             <Section title="Personal & Contact Details" action={
-                                !editing ? (
+                                canEditStaffInfo && !editing ? (
                                     <button type="button" onClick={() => setEditing(true)} className="rounded-lg bg-slate-900 px-4 py-2 text-xs font-semibold text-white">Edit Profile</button>
-                                ) : (
+                                ) : canEditStaffInfo ? (
                                     <div className="flex gap-2">
                                         <button type="button" onClick={() => setEditing(false)} className="rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-medium text-slate-600">Cancel</button>
                                         <button type="button" onClick={saveProfile} className="rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white">Save</button>
                                     </div>
-                                )
+                                ) : null
                             }>
-                                {!editing ? (
+                                {!editing || !canEditStaffInfo ? (
                                     <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
                                         <Field label="Title" value={employee.title} />
                                         <Field label="First Name" value={employee.first_name} />
@@ -236,7 +244,8 @@ export default function EmployeeProfile({
                                         <Field label="Primary Role" value={employee.role_label || employee.primary_role} />
                                         <Field label="Account Status" value={employee.account_status} />
                                     </div>
-                                ) : (
+                                )
+                                : (
                                     <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
                                         <div>
                                             <label className="mb-1 block text-[10px] font-semibold uppercase tracking-wide text-slate-500">Title</label>
@@ -299,16 +308,16 @@ export default function EmployeeProfile({
 
                         {activeTab === 'DBS & Compliance' && (
                             <Section title="DBS Check" action={
-                                !editing ? (
+                                canEditStaffInfo && !editing ? (
                                     <button type="button" onClick={() => setEditing(true)} className="rounded-lg bg-slate-900 px-4 py-2 text-xs font-semibold text-white">Edit DBS</button>
-                                ) : (
+                                ) : canEditStaffInfo ? (
                                     <div className="flex gap-2">
                                         <button type="button" onClick={() => setEditing(false)} className="rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-medium text-slate-600">Cancel</button>
                                         <button type="button" onClick={saveProfile} className="rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white">Save</button>
                                     </div>
-                                )
+                                ) : null
                             }>
-                                {!editing ? (
+                                {!editing || !canEditStaffInfo ? (
                                     <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
                                         <Field label="Certificate Number" value={employee.dbs_certificate_number} />
                                         <Field label="Issue Date" value={employee.dbs_issue_date} />
@@ -318,7 +327,8 @@ export default function EmployeeProfile({
                                             <dd className="mt-1">{dbsStatusBadge(employee.dbs_status, employee.dbs_expiry_date)}</dd>
                                         </div>
                                     </div>
-                                ) : (
+                                )
+                                : (
                                     <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
                                         <div>
                                             <label className="mb-1 block text-[10px] font-semibold uppercase tracking-wide text-slate-500">Certificate Number</label>
@@ -347,12 +357,12 @@ export default function EmployeeProfile({
                         )}
 
                         {activeTab === 'Training' && (
-                            <Section title="Training Matrix" action={
+                            <Section title="Training Matrix" action={canEditStaffInfo ? (
                                 <button type="button" onClick={() => setShowTrainingForm(!showTrainingForm)} className="rounded-lg bg-slate-900 px-4 py-2 text-xs font-semibold text-white">
                                     + Add Training
                                 </button>
-                            }>
-                                {showTrainingForm && (
+                            ) : null}>
+                                {canEditStaffInfo && showTrainingForm && (
                                     <form onSubmit={addTraining} className="mb-4 rounded-lg border border-slate-200 bg-slate-50 p-4">
                                         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
                                             <div>
@@ -416,12 +426,12 @@ export default function EmployeeProfile({
                         )}
 
                         {activeTab === 'Competencies' && (
-                            <Section title="Competency Management" action={
+                            <Section title="Competency Management" action={canEditStaffInfo ? (
                                 <button type="button" onClick={() => setShowCompetencyForm(!showCompetencyForm)} className="rounded-lg bg-slate-900 px-4 py-2 text-xs font-semibold text-white">
                                     + Add Competency
                                 </button>
-                            }>
-                                {showCompetencyForm && (
+                            ) : null}>
+                                {canEditStaffInfo && showCompetencyForm && (
                                     <form onSubmit={addCompetency} className="mb-4 rounded-lg border border-slate-200 bg-slate-50 p-4">
                                         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
                                             <div>
@@ -499,12 +509,12 @@ export default function EmployeeProfile({
                         )}
 
                         {activeTab === 'Supervisions' && (
-                            <Section title="Supervision Records" action={
+                            <Section title="Supervision Records" action={canEditStaffInfo ? (
                                 <button type="button" onClick={() => setShowSupervisionForm(!showSupervisionForm)} className="rounded-lg bg-slate-900 px-4 py-2 text-xs font-semibold text-white">
                                     + Schedule Supervision
                                 </button>
-                            }>
-                                {showSupervisionForm && (
+                            ) : null}>
+                                {canEditStaffInfo && showSupervisionForm && (
                                     <form onSubmit={addSupervision} className="mb-4 rounded-lg border border-slate-200 bg-slate-50 p-4">
                                         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
                                             <div>
@@ -574,12 +584,12 @@ export default function EmployeeProfile({
                         )}
 
                         {activeTab === 'Documents' && (
-                            <Section title="Staff Documents" action={
+                            <Section title="Staff Documents" action={canEditStaffInfo ? (
                                 <button type="button" onClick={() => setShowDocumentForm(!showDocumentForm)} className="rounded-lg bg-slate-900 px-4 py-2 text-xs font-semibold text-white">
                                     + Upload Document
                                 </button>
-                            }>
-                                {showDocumentForm && (
+                            ) : null}>
+                                {canEditStaffInfo && showDocumentForm && (
                                     <form onSubmit={uploadDocument} className="mb-4 rounded-lg border border-slate-200 bg-slate-50 p-4">
                                         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
                                             <div>

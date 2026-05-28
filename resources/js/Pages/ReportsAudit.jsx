@@ -58,8 +58,9 @@ const reportTypes = [
         id: 'compliance',
         title: 'Compliance & Training',
         description: 'Training certifications, expiry dates, and compliance status.',
-        status: 'DRAFT',
-        tags: ['Coming Soon'],
+        status: 'ACTIVE',
+        tags: ['Training', 'Compliance'],
+        href: 'reports.compliance-training',
     },
     {
         id: 'medications',

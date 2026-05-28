@@ -3,6 +3,7 @@ import { useCallback, useEffect, useState } from 'react';
 import ApplicationLogo from '@/Components/ApplicationLogo';
 import AppHeaderNav from '@/Components/AppHeaderNav';
 import ProfileMenu from '@/Components/ProfileMenu';
+import { postWithOfflineQueue } from '@/utils/offlineQueue';
 
 function haversineDistance(lat1, lon1, lat2, lon2) {
     const R = 6371000;
@@ -116,6 +117,7 @@ export default function ShiftCheckIn({ patientSlug = 'arthur-henderson', initial
     const patientLocation = patientContext?.location || 'Location not provided';
     const patientLat = patientContext?.latitude ?? null;
     const patientLng = patientContext?.longitude ?? null;
+    const requiresGpsVerification = patientLat !== null && patientLng !== null;
     const scheduledStartAt = patientContext?.scheduledStartAt ? new Date(patientContext.scheduledStartAt) : null;
     const scheduledEndAt = patientContext?.scheduledEndAt ? new Date(patientContext.scheduledEndAt) : null;
     const scheduledWindow = patientContext?.scheduledWindow || 'Not scheduled';
@@ -151,6 +153,7 @@ export default function ShiftCheckIn({ patientSlug = 'arthur-henderson', initial
     const [gpsCoords, setGpsCoords] = useState(null);
     const [gpsDistance, setGpsDistance] = useState(null);
     const [gpsError, setGpsError] = useState(null);
+    const [isOnline, setIsOnline] = useState(typeof navigator !== 'undefined' ? navigator.onLine : true);
 
     const verifyGps = useCallback(() => {
         if (!navigator.geolocation) {
@@ -172,13 +175,16 @@ export default function ShiftCheckIn({ patientSlug = 'arthur-henderson', initial
                         setProtocol((prev) => ({ ...prev, locationVerification: 'yes' }));
                     } else {
                         setGpsStatus('too_far');
+                        setProtocol((prev) => ({ ...prev, locationVerification: 'no' }));
                     }
                 } else {
                     setGpsStatus('no_coords');
+                    setProtocol((prev) => ({ ...prev, locationVerification: 'yes' }));
                 }
             },
             (err) => {
                 setGpsStatus('error');
+                setProtocol((prev) => ({ ...prev, locationVerification: 'no' }));
                 setGpsError(
                     err.code === 1
                         ? 'Location permission denied. Please allow location access.'
@@ -222,21 +228,32 @@ export default function ShiftCheckIn({ patientSlug = 'arthur-henderson', initial
             sessionStartedAt: sessionStartedAt ? sessionStartedAt.toISOString() : null,
             sessionEndedAt: sessionEndedAt ? sessionEndedAt.toISOString() : null,
             sessionEndReason,
+            gpsStatus,
+            gpsCoords,
+            gpsDistance,
             updatedBy: auth?.user?.id || null,
             ...overrides,
         };
-        router.post(route('form-snapshots.save', { formKey: `shift-checkin:${patientSlug}` }), { data: payload }, { preserveScroll: true });
+        postWithOfflineQueue(
+            route('form-snapshots.save', { formKey: `shift-checkin:${patientSlug}` }),
+            { data: payload },
+            {}
+        );
     };
 
     const saveVitals = () => {
-        router.post(route('patients.vitals.store', patientSlug), {
-            heart_rate: vitals.heartRate,
-            bp_systolic: vitals.bpSystolic,
-            spo2: vitals.spo2,
-        }, {
-            preserveScroll: true,
-            onSuccess: () => persistSnapshot({ vitals }),
-        });
+        postWithOfflineQueue(
+            route('patients.vitals.store', patientSlug),
+            {
+                heart_rate: vitals.heartRate,
+                bp_systolic: vitals.bpSystolic,
+                spo2: vitals.spo2,
+            },
+            {
+                onSuccess: () => persistSnapshot({ vitals }),
+                onQueued: () => persistSnapshot({ vitals }),
+            }
+        );
     };
 
     useEffect(() => {
@@ -247,8 +264,20 @@ export default function ShiftCheckIn({ patientSlug = 'arthur-henderson', initial
         return () => window.clearInterval(intervalId);
     }, []);
 
+    useEffect(() => {
+        const onOnline = () => setIsOnline(true);
+        const onOffline = () => setIsOnline(false);
+        window.addEventListener('online', onOnline);
+        window.addEventListener('offline', onOffline);
+        return () => {
+            window.removeEventListener('online', onOnline);
+            window.removeEventListener('offline', onOffline);
+        };
+    }, []);
+
     const completed = Object.values(protocol).filter((value) => value === 'yes').length;
-    const readyToStart = Object.values(protocol).every((value) => value === 'yes') && signature.trim().length >= 2;
+    const gpsReadyForStart = requiresGpsVerification ? gpsStatus === 'verified' : protocol.locationVerification === 'yes';
+    const readyToStart = Object.values(protocol).every((value) => value === 'yes') && signature.trim().length >= 2 && gpsReadyForStart;
     const hasValidSchedule = scheduledStartAt
         && scheduledEndAt
         && !Number.isNaN(scheduledStartAt.getTime())
@@ -362,6 +391,11 @@ export default function ShiftCheckIn({ patientSlug = 'arthur-henderson', initial
                     </aside>
 
                     <main className="flex-1 p-4 sm:p-6 lg:p-8">
+                        {!isOnline && (
+                            <section className="mb-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-2 text-xs font-semibold text-amber-800">
+                                Offline mode: actions are queued and will sync automatically when connection returns.
+                            </section>
+                        )}
                         <header className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-2xl bg-white px-5 py-3">
                             <AppHeaderNav active="patients" />
                             <div className="flex items-center gap-3">
@@ -522,14 +556,22 @@ export default function ShiftCheckIn({ patientSlug = 'arthur-henderson', initial
                                                 </div>
                                                 <ToggleChoice
                                                     value={protocol[item.key]}
-                                                    onChange={(value) =>
+                                                    onChange={(value) => {
+                                                        if (item.key === 'locationVerification') {
+                                                            return;
+                                                        }
                                                         setProtocol((prev) => ({
                                                             ...prev,
                                                             [item.key]: value,
-                                                        }))
-                                                    }
+                                                        }));
+                                                    }}
                                                 />
                                             </div>
+                                            {item.key === 'locationVerification' && (
+                                                <p className="mt-2 text-xs text-slate-500">
+                                                    This field is controlled by GPS verification and cannot be set manually.
+                                                </p>
+                                            )}
                                         </article>
                                     ))}
                                 </div>
@@ -626,7 +668,9 @@ export default function ShiftCheckIn({ patientSlug = 'arthur-henderson', initial
                                                 ? hasShiftEndedManually
                                                     ? 'This shift was manually ended before the scheduled finish time.'
                                                     : 'This shift has already been completed for this session.'
-                                                : 'By starting, you acknowledge all protocols have been verified.'}
+                                                : requiresGpsVerification && gpsStatus !== 'verified'
+                                                    ? 'GPS verification is required before starting this shift.'
+                                                    : 'By starting, you acknowledge all protocols have been verified.'}
                                     </p>
                                     {isShiftInSession && <p className="mt-2 text-xs font-semibold text-emerald-700">Session started successfully.</p>}
 

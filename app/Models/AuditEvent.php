@@ -9,6 +9,17 @@ class AuditEvent extends Model
 {
     public $timestamps = false;
 
+    protected static function booted(): void
+    {
+        static::updating(function (): bool {
+            return false;
+        });
+
+        static::deleting(function (): bool {
+            return false;
+        });
+    }
+
     protected $fillable = [
         'user_id',
         'user_name',

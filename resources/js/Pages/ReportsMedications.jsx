@@ -25,6 +25,7 @@ export default function ReportsMedications({ stats = {}, refusedReasons = {}, by
     const [to, setTo] = useState(filters.to || '');
     const [showByPatient, setShowByPatient] = useState(false);
     const [selectedPatient, setSelectedPatient] = useState('');
+    const exportQuery = { from, to };
 
     const applyFilters = () => {
         router.get(route('reports.medications'), { from, to }, { preserveState: true, preserveScroll: true });
@@ -77,6 +78,18 @@ export default function ReportsMedications({ stats = {}, refusedReasons = {}, by
                                     <input type="date" value={to} onChange={(e) => setTo(e.target.value)} className="mt-1 block rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm" />
                                 </div>
                                 <button type="button" onClick={applyFilters} className="rounded-lg bg-emerald-600 px-4 py-2 text-xs font-semibold text-white shadow-sm hover:bg-emerald-700">Apply</button>
+                                <a
+                                    href={route('reports.medications.export.csv', exportQuery)}
+                                    className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+                                >
+                                    Export CSV
+                                </a>
+                                <a
+                                    href={route('reports.medications.export.pdf', exportQuery)}
+                                    className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+                                >
+                                    Export PDF
+                                </a>
                             </div>
                         </section>
 
