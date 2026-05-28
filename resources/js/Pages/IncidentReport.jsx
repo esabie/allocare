@@ -2,6 +2,7 @@ import { Head, Link, router, usePage } from '@inertiajs/react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import ApplicationLogo from '@/Components/ApplicationLogo';
 import ProfileMenu from '@/Components/ProfileMenu';
+import { postWithOfflineQueue } from '@/utils/offlineQueue';
 
 const sideTabs = [
     { label: 'Overview' },
@@ -43,6 +44,7 @@ export default function IncidentReport({ patientSlug = 'cr-88210', incidentStatu
     const [newStaffMember, setNewStaffMember] = useState('');
     const [managerName, setManagerName] = useState('');
     const [managerSignOff, setManagerSignOff] = useState(false);
+    const [isOnline, setIsOnline] = useState(typeof navigator !== 'undefined' ? navigator.onLine : true);
     const incidentRef = useMemo(() => {
         const now = new Date();
         const year = now.getFullYear();
@@ -125,7 +127,7 @@ export default function IncidentReport({ patientSlug = 'cr-88210', incidentStatu
     const saveSnapshot = () => {
         const data = gatherFormData();
         if (!Object.keys(data).length) return;
-        router.post(route('form-snapshots.save', { formKey: `incident:${patientSlug}` }), { data }, { preserveScroll: true });
+        postWithOfflineQueue(route('form-snapshots.save', { formKey: `incident:${patientSlug}` }), { data }, {});
     };
 
     const [submitting, setSubmitting] = useState(false);
@@ -150,12 +152,16 @@ export default function IncidentReport({ patientSlug = 'cr-88210', incidentStatu
         data.status = 'Submitted';
         data.submittedAt = new Date().toISOString();
         setSubmitting(true);
-        router.post(
+        postWithOfflineQueue(
             route('form-snapshots.save', { formKey: `incident:${patientSlug}` }),
             { data },
             {
-                preserveScroll: true,
                 onSuccess: () => {
+                    setSubmitting(false);
+                    setSubmitted(true);
+                    resetForm();
+                },
+                onQueued: () => {
                     setSubmitting(false);
                     setSubmitted(true);
                     resetForm();
@@ -163,9 +169,20 @@ export default function IncidentReport({ patientSlug = 'cr-88210', incidentStatu
                 onError: () => {
                     setSubmitting(false);
                 },
-            },
+            }
         );
     };
+
+    useEffect(() => {
+        const onOnline = () => setIsOnline(true);
+        const onOffline = () => setIsOnline(false);
+        window.addEventListener('online', onOnline);
+        window.addEventListener('offline', onOffline);
+        return () => {
+            window.removeEventListener('online', onOnline);
+            window.removeEventListener('offline', onOffline);
+        };
+    }, []);
 
     return (
         <>
@@ -216,7 +233,12 @@ export default function IncidentReport({ patientSlug = 'cr-88210', incidentStatu
                         </nav>
                     </aside>
 
-                    <main className="flex-1 p-4 sm:p-6 lg:p-8">
+                    <main className="flex-1 p-4 pb-24 sm:p-6 lg:p-8 lg:pb-8">
+                        {!isOnline && (
+                            <section className="mb-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-2 text-xs font-semibold text-amber-800">
+                                Offline mode: draft/submission actions are queued and will sync automatically on reconnect.
+                            </section>
+                        )}
                         <header className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-2xl bg-white px-5 py-3">
                             <div className="flex items-center gap-6 text-sm font-medium text-slate-600">
                                 <Link href={route('dashboard')} className="hover:text-slate-900">
@@ -562,6 +584,24 @@ export default function IncidentReport({ patientSlug = 'cr-88210', incidentStatu
                             </div>
                         </section>
                         </form>
+
+                        {!submitted && (
+                            <div className="fixed inset-x-0 bottom-0 z-30 border-t border-slate-200 bg-white/95 p-3 backdrop-blur lg:hidden">
+                                <div className="flex gap-2">
+                                    <button type="button" onClick={saveSnapshot} className="flex-1 rounded-xl border border-slate-200 px-4 py-2.5 text-sm font-semibold text-slate-700">
+                                        Save Draft
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={submitReport}
+                                        disabled={!managerName.trim() || !managerSignOff || submitting}
+                                        className="flex-1 rounded-xl bg-emerald-700 px-4 py-2.5 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
+                                    >
+                                        {submitting ? 'Submitting...' : 'Submit'}
+                                    </button>
+                                </div>
+                            </div>
+                        )}
                     </main>
                 </div>
             </div>

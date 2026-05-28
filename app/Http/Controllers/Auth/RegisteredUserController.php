@@ -67,7 +67,7 @@ class RegisteredUserController extends Controller
             'postcode' => $validated['postcode'] ?? null,
             'primary_role' => 'super_admin',
             'photo_path' => $request->hasFile('photo') ? $request->file('photo')->store('employee-photos', 'public') : null,
-            'mfa_enabled' => $request->boolean('mfa_enabled'),
+            'mfa_enabled' => true,
         ]);
 
         event(new Registered($user));

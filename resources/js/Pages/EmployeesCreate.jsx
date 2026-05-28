@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from 'react';
 import DashboardSidebar from '@/Components/DashboardSidebar';
 import AppHeaderNav from '@/Components/AppHeaderNav';
 import ProfileMenu from '@/Components/ProfileMenu';
+import { postWithOfflineQueue } from '@/utils/offlineQueue';
 
 const roleOptions = [
     { label: 'Super Admin', value: 'super_admin', disabled: true },
@@ -74,6 +75,7 @@ export default function EmployeesCreate() {
     const [photoPreview, setPhotoPreview] = useState('');
     const [photoFile, setPhotoFile] = useState(null);
     const [photoError, setPhotoError] = useState('');
+    const [isOnline, setIsOnline] = useState(typeof navigator !== 'undefined' ? navigator.onLine : true);
 
     const normalizeDateForInput = (value) => {
         if (!value) return '';
@@ -124,9 +126,7 @@ export default function EmployeesCreate() {
     const saveDraft = () => {
         const snapshot = collectSnapshot();
         if (!snapshot) return;
-        router.post(route('form-snapshots.save', { formKey: 'employee-create' }), { data: snapshot }, {
-            preserveScroll: true,
-        });
+        postWithOfflineQueue(route('form-snapshots.save', { formKey: 'employee-create' }), { data: snapshot }, {});
     };
 
     const clearForm = () => {
@@ -142,17 +142,27 @@ export default function EmployeesCreate() {
     };
 
     const discardDraft = () => {
-        router.post(route('form-snapshots.save', { formKey: 'employee-create' }), { data: {} }, {
-            preserveScroll: true,
-            onSuccess: () => {
-                clearForm();
-            },
-        });
+        postWithOfflineQueue(
+            route('form-snapshots.save', { formKey: 'employee-create' }),
+            { data: {} },
+            {
+                onSuccess: () => {
+                    clearForm();
+                },
+                onQueued: () => {
+                    clearForm();
+                },
+            }
+        );
     };
 
     const completeRegistration = () => {
         const snapshot = collectSnapshot();
         if (!snapshot) return;
+        if (!isOnline && photoFile) {
+            setPhotoError('Photo uploads require an internet connection. Save draft offline and submit once online.');
+            return;
+        }
         const payload = { ...snapshot };
         if (payload.date_of_birth) {
             payload.date_of_birth = normalizeDobForSubmit(payload.date_of_birth);
@@ -161,11 +171,27 @@ export default function EmployeesCreate() {
             payload.photo = photoFile;
         }
 
-        router.post(route('employees.store'), payload, {
-            forceFormData: true,
-            preserveScroll: true,
-        });
+        if (photoFile) {
+            router.post(route('employees.store'), payload, {
+                forceFormData: true,
+                preserveScroll: true,
+            });
+            return;
+        }
+
+        postWithOfflineQueue(route('employees.store'), payload, {});
     };
+
+    useEffect(() => {
+        const onOnline = () => setIsOnline(true);
+        const onOffline = () => setIsOnline(false);
+        window.addEventListener('online', onOnline);
+        window.addEventListener('offline', onOffline);
+        return () => {
+            window.removeEventListener('online', onOnline);
+            window.removeEventListener('offline', onOffline);
+        };
+    }, []);
 
     const errorMessages = Object.values(serverErrors || {});
 
@@ -222,6 +248,11 @@ export default function EmployeesCreate() {
                     <DashboardSidebar active="employees" />
 
                     <main className="flex-1 p-4 sm:p-6 lg:p-8">
+                        {!isOnline && (
+                            <section className="mb-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-2 text-xs font-semibold text-amber-800">
+                                Offline mode: draft and non-photo enrollment actions are queued and synced when online.
+                            </section>
+                        )}
                         <header className="mb-6 flex flex-wrap items-center justify-between gap-4 rounded-2xl bg-white px-5 py-4">
                             <AppHeaderNav />
                             <div className="flex items-center gap-3">

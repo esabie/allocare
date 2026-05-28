@@ -11,7 +11,7 @@ export default function DashboardSidebar({ active = 'overview', subtitle = 'Clin
         { key: 'overview', label: 'Overview', href: route('dashboard') },
         { key: 'journal', label: 'Journal', href: route('journal') },
         { key: 'care_alerts', label: 'Care Alerts' },
-        { key: 'analytics', label: 'Analytics' },
+        { key: 'analytics', label: 'Analytics', href: route('analytics') },
         { key: 'employees', label: 'Employees', href: route('employees') },
         ...(canViewActivityLog ? [{ key: 'activity_logs', label: 'Activity Logs', href: route('admin.activity-logs') }] : []),
     ];

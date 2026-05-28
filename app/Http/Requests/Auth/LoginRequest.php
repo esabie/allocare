@@ -59,6 +59,15 @@ class LoginRequest extends FormRequest
             ]);
         }
 
+        if (! (bool) (Auth::user()?->mfa_enabled)) {
+            Auth::logout();
+            RateLimiter::hit($this->throttleKey());
+
+            throw ValidationException::withMessages([
+                'email' => 'Two-factor authentication is mandatory for all accounts.',
+            ]);
+        }
+
         RateLimiter::clear($this->throttleKey());
     }
 

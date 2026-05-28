@@ -100,16 +100,33 @@ export default function Patients({ patients: dbPatients = [] }) {
 
                             <header className="mb-5 flex flex-wrap items-end justify-between gap-3">
                                 <div>
-                                    {/* <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Portfolio</p> */}
                                     <h1 className="text-4xl font-bold tracking-tight text-slate-900">Patient Directory</h1>
+                                    <p className="mt-2 text-sm text-slate-600">
+                                        <span className="font-semibold text-emerald-700">{visiblePatients.length}</span> patients found
+                                    </p>
                                 </div>
-                                <Link
-                                    href={route('patients.create')}
-                                    className="rounded-xl bg-slate-900 px-5 py-3 text-sm font-semibold text-white shadow-sm"
-                                >
-                                    + Add Patient
-                                </Link>
+                                <div className="flex items-center gap-3">
+                                    <div className="relative">
+                                        <span className="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-2.5 text-slate-400">
+                                            <svg xmlns="http://www.w3.org/2000/svg" className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-4.35-4.35M11 19a8 8 0 100-16 8 8 0 000 16z" /></svg>
+                                        </span>
+                                        <input
+                                            type="search"
+                                            placeholder="Search..."
+                                            value={searchTerm}
+                                            onChange={(e) => setSearchTerm(e.target.value)}
+                                            className="w-44 rounded-lg border border-slate-200 bg-white py-2 pl-8 pr-3 text-xs text-slate-700 outline-none transition placeholder:text-slate-400 focus:w-56 focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100"
+                                        />
+                                    </div>
+                                    <Link
+                                        href={route('patients.create')}
+                                        className="rounded-xl bg-slate-900 px-5 py-2.5 text-sm font-semibold text-white shadow-sm"
+                                    >
+                                        + Add Patient
+                                    </Link>
+                                </div>
                             </header>
+
 
                             {visiblePatients.length === 0 ? (
                                 <div className="rounded-2xl border border-dashed border-slate-200 bg-white px-8 py-16 text-center">

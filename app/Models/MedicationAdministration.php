@@ -19,6 +19,9 @@ class MedicationAdministration extends Model
         'scheduled_for',
         'notes',
         'source_mar_slug',
+        'reason',
+        'witness_user_id',
+        'witness_name',
     ];
 
     protected $casts = [
@@ -40,5 +43,9 @@ class MedicationAdministration extends Model
     {
         return $this->belongsTo(User::class, 'administered_by_user_id');
     }
-}
 
+    public function witness(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'witness_user_id');
+    }
+}

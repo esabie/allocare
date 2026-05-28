@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from 'react';
 import ApplicationLogo from '@/Components/ApplicationLogo';
 import AppHeaderNav from '@/Components/AppHeaderNav';
 import ProfileMenu from '@/Components/ProfileMenu';
+import { postWithOfflineQueue } from '@/utils/offlineQueue';
 
 const sideTabs = [
     { label: 'Overview', key: 'overview' },
@@ -49,6 +50,7 @@ export default function PatientCarePlanDetail({ patientSlug = 'sarah-jenkins', p
     const { auth, initialSnapshot = {} } = usePage().props;
     const successMessage = usePage().props?.flash?.success;
     const [validationMessage, setValidationMessage] = useState('');
+    const [isOnline, setIsOnline] = useState(typeof navigator !== 'undefined' ? navigator.onLine : true);
     const formContainerRef = useRef(null);
     const planName = formatPlanName(planSlug);
     const isEndOfLifeCarePlan = planSlug === 'end-of-life-support' || planSlug === 'advance-care-planning';
@@ -178,15 +180,23 @@ export default function PatientCarePlanDetail({ patientSlug = 'sarah-jenkins', p
         }
 
         setValidationMessage('');
-        router.post(
+        postWithOfflineQueue(
             route('patients.careplans.save', { patient: patientSlug, plan: planSlug }),
             { data },
-            {
-                preserveScroll: true,
-                preserveState: true,
-            },
+            {}
         );
     };
+
+    useEffect(() => {
+        const onOnline = () => setIsOnline(true);
+        const onOffline = () => setIsOnline(false);
+        window.addEventListener('online', onOnline);
+        window.addEventListener('offline', onOffline);
+        return () => {
+            window.removeEventListener('online', onOnline);
+            window.removeEventListener('offline', onOffline);
+        };
+    }, []);
 
     return (
         <>
@@ -284,6 +294,11 @@ export default function PatientCarePlanDetail({ patientSlug = 'sarah-jenkins', p
                     </aside>
 
                     <main ref={formContainerRef} className="flex-1 p-4 sm:p-6 lg:p-8">
+                        {!isOnline && (
+                            <section className="mb-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-2 text-xs font-semibold text-amber-800">
+                                Offline mode: care plan saves are queued and will sync automatically when reconnected.
+                            </section>
+                        )}
                         <header className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-2xl bg-white px-5 py-3">
                             <AppHeaderNav active="patients" />
                             <div className="flex items-center gap-3">

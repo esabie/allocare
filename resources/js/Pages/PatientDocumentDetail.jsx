@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react';
 import ApplicationLogo from '@/Components/ApplicationLogo';
 import AppHeaderNav from '@/Components/AppHeaderNav';
 import ProfileMenu from '@/Components/ProfileMenu';
+import { postWithOfflineQueue } from '@/utils/offlineQueue';
 
 const sideTabs = [
     { label: 'Overview', key: 'overview' },
@@ -378,6 +379,7 @@ export default function PatientDocumentDetail({ patientSlug = 'cr-88210', docume
     const [isSubmitted, setIsSubmitted] = useState(Boolean(savedSubmittedAt));
     const [isEditing, setIsEditing] = useState(false);
     const [systemNow, setSystemNow] = useState(new Date());
+    const [isOnline, setIsOnline] = useState(typeof navigator !== 'undefined' ? navigator.onLine : true);
     const roleCandidates = [
         currentUser?.role,
         currentUser?.role_name,
@@ -432,17 +434,21 @@ export default function PatientDocumentDetail({ patientSlug = 'cr-88210', docume
             return;
         }
 
-        router.post(
+        postWithOfflineQueue(
             route('patients.documents.save', { patient: patientSlug, document: documentSlug }),
             { data: formData },
             {
-                preserveScroll: true,
                 onSuccess: () => {
                     setLastSavedData(formData);
                     setIsSubmitted(true);
                     setIsEditing(false);
                 },
-            },
+                onQueued: () => {
+                    setLastSavedData(formData);
+                    setIsSubmitted(true);
+                    setIsEditing(false);
+                },
+            }
         );
     };
 
@@ -522,6 +528,17 @@ export default function PatientDocumentDetail({ patientSlug = 'cr-88210', docume
         );
     };
 
+    useEffect(() => {
+        const onOnline = () => setIsOnline(true);
+        const onOffline = () => setIsOnline(false);
+        window.addEventListener('online', onOnline);
+        window.addEventListener('offline', onOffline);
+        return () => {
+            window.removeEventListener('online', onOnline);
+            window.removeEventListener('offline', onOffline);
+        };
+    }, []);
+
     return (
         <>
             <Head title={`${documentName} - Document`} />
@@ -562,6 +579,11 @@ export default function PatientDocumentDetail({ patientSlug = 'cr-88210', docume
                     </aside>
 
                     <main className="flex-1 p-4 sm:p-6 lg:p-8">
+                        {!isOnline && (
+                            <section className="mb-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-2 text-xs font-semibold text-amber-800">
+                                Offline mode: document form saves are queued and will sync automatically when online.
+                            </section>
+                        )}
                         <header className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-2xl bg-white px-5 py-3">
                             <AppHeaderNav active="patients" />
                             <ProfileMenu />

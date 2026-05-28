@@ -56,37 +56,54 @@ function getStatusMeta(entry) {
     }
 
     if (start <= now && end >= now) {
+        if (entry.completionStatus === 'completed') {
+            return {
+                key: 'done',
+                label: 'COMPLETED',
+                cardClass: 'border-emerald-100 bg-white',
+                badgeClass: 'bg-emerald-100 text-emerald-700',
+            };
+        }
         return {
-            key: 'active',
-            label: 'ACTIVE',
-            cardClass: 'border-emerald-200 bg-emerald-50',
-            badgeClass: 'bg-emerald-500 text-white',
+            key: 'upcoming',
+            label: 'DUE NOW',
+            cardClass: 'border-amber-200 bg-amber-50',
+            badgeClass: 'bg-amber-500 text-white',
         };
     }
 
     if (start > now) {
-        if (start - now <= 12 * 60 * 60 * 1000) {
-            return {
-                key: 'pending',
-                label: 'PENDING',
-                cardClass: 'border-indigo-200 bg-indigo-50',
-                badgeClass: 'bg-indigo-700 text-white',
-            };
-        }
-
         return {
-            key: 'confirmed',
-            label: 'CONFIRMED',
-            cardClass: 'border-slate-200 bg-slate-50',
-            badgeClass: 'bg-slate-900 text-white',
+            key: 'upcoming',
+            label: 'UPCOMING',
+            cardClass: 'border-indigo-200 bg-indigo-50',
+            badgeClass: 'bg-indigo-700 text-white',
+        };
+    }
+
+    if (entry.completionStatus === 'missed') {
+        return {
+            key: 'missed',
+            label: 'MISSED',
+            cardClass: 'border-red-200 bg-red-50',
+            badgeClass: 'bg-red-100 text-red-700',
+        };
+    }
+
+    if (entry.completionStatus === 'completed') {
+        return {
+            key: 'done',
+            label: 'COMPLETED',
+            cardClass: 'border-emerald-100 bg-white',
+            badgeClass: 'bg-emerald-100 text-emerald-700',
         };
     }
 
     return {
-        key: 'completed',
-        label: 'COMPLETED',
-        cardClass: 'border-emerald-100 bg-white',
-        badgeClass: 'bg-emerald-100 text-emerald-700',
+        key: 'overdue',
+        label: 'OVERDUE',
+        cardClass: 'border-purple-200 bg-purple-50',
+        badgeClass: 'bg-purple-100 text-purple-700',
     };
 }
 
@@ -97,11 +114,72 @@ export default function Schedules({ patients = [], staff = [], entries = [] }) {
     const [bookedOnly, setBookedOnly] = useState(false);
     const [weekAnchor, setWeekAnchor] = useState(() => getStartOfWeek(new Date()));
     const [draggedEntry, setDraggedEntry] = useState(null);
+    const [selectedEntry, setSelectedEntry] = useState(null);
+    const [completionNotes, setCompletionNotes] = useState('');
+    const [rescheduleEntry, setRescheduleEntry] = useState(null);
+    const [rescheduleDate, setRescheduleDate] = useState('');
+    const [rescheduleStartTime, setRescheduleStartTime] = useState('');
+    const [rescheduleEndTime, setRescheduleEndTime] = useState('');
     const [filters, setFilters] = useState({
         patientUrlKey: '',
         staffId: '',
         status: '',
     });
+
+    const openCompletionModal = (entry) => {
+        setSelectedEntry(entry);
+        setCompletionNotes('');
+    };
+
+    const closeCompletionModal = () => {
+        setSelectedEntry(null);
+        setCompletionNotes('');
+    };
+
+    const markCompleted = () => {
+        if (!selectedEntry) return;
+        router.patch(route('schedules.complete', selectedEntry.id), { notes: completionNotes || 'Shift completed', status: 'completed' }, {
+            preserveScroll: true,
+            onSuccess: () => closeCompletionModal(),
+        });
+    };
+
+    const markMissed = () => {
+        if (!selectedEntry) return;
+        router.patch(route('schedules.complete', selectedEntry.id), { notes: completionNotes || 'Shift missed — carer did not attend', status: 'missed' }, {
+            preserveScroll: true,
+            onSuccess: () => closeCompletionModal(),
+        });
+    };
+
+    const openRescheduleModal = (entry) => {
+        setRescheduleEntry(entry);
+        const startDate = entry.startAt ? new Date(entry.startAt) : new Date();
+        setRescheduleDate(startDate.toISOString().split('T')[0]);
+        setRescheduleStartTime(startDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false }));
+        const endDate = entry.endAt ? new Date(entry.endAt) : new Date();
+        setRescheduleEndTime(endDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false }));
+    };
+
+    const closeRescheduleModal = () => {
+        setRescheduleEntry(null);
+        setRescheduleDate('');
+        setRescheduleStartTime('');
+        setRescheduleEndTime('');
+    };
+
+    const submitReschedule = () => {
+        if (!rescheduleEntry) return;
+        router.patch(route('schedules.reschedule', rescheduleEntry.id), {
+            patient_url_key: rescheduleEntry.patientUrlKey,
+            visit_date: rescheduleDate,
+            start_time: rescheduleStartTime,
+            end_time: rescheduleEndTime,
+        }, {
+            preserveScroll: true,
+            onSuccess: () => closeRescheduleModal(),
+        });
+    };
     const { data, setData, post, processing, errors, reset } = useForm({
         patient_url_key: '',
         assigned_user_id: '',
@@ -422,10 +500,15 @@ export default function Schedules({ patients = [], staff = [], entries = [] }) {
                                                                         return (
                                                                             <div
                                                                                 key={cardKey}
-                                                                                draggable={!isOvernightEnd}
+                                                                                draggable={!isOvernightEnd && status.key !== 'done' && status.key !== 'overdue' && status.key !== 'missed' && status.key !== 'upcoming'}
                                                                                 onDragStart={() => !isOvernightEnd && setDraggedEntry(entry)}
                                                                                 onDragEnd={() => setDraggedEntry(null)}
-                                                                                className={`rounded-xl border p-2 ${status.cardClass} ${isOvernightEnd ? 'border-dashed opacity-90' : 'cursor-move'}`}
+                                                                                onClick={() => {
+                                                                                    if (isOvernightEnd) return;
+                                                                                    if (status.key === 'overdue') openCompletionModal(entry);
+                                                                                    if (status.key === 'upcoming') openRescheduleModal(entry);
+                                                                                }}
+                                                                                className={`rounded-xl border p-2 ${status.cardClass} ${isOvernightEnd ? 'border-dashed opacity-90' : (status.key === 'overdue' ? 'cursor-pointer hover:ring-2 hover:ring-purple-300' : status.key === 'upcoming' ? 'cursor-pointer hover:ring-2 hover:ring-indigo-300' : (status.key === 'done' || status.key === 'missed' ? '' : 'cursor-move'))}`}
                                                                             >
                                                                                 <p className="text-[11px] font-bold text-slate-700">
                                                                                     {isOvernightEnd
@@ -594,6 +677,113 @@ export default function Schedules({ patients = [], staff = [], entries = [] }) {
                                 {processing ? 'Saving...' : 'Save Schedule'}
                             </button>
                         </form>
+                    </div>
+                </div>
+            )}
+
+            {rescheduleEntry && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40" onClick={closeRescheduleModal}>
+                    <div className="w-full max-w-md rounded-2xl bg-white p-6 shadow-xl" onClick={(e) => e.stopPropagation()}>
+                        <h2 className="text-xl font-semibold text-slate-900">Reschedule Visit</h2>
+                        <p className="mt-1 text-sm text-slate-500">
+                            <span className="font-medium">{rescheduleEntry.staffName}</span> — {rescheduleEntry.purpose || 'Scheduled visit'} for <span className="font-medium">{rescheduleEntry.patientName}</span>
+                        </p>
+
+                        <div className="mt-4 space-y-3">
+                            <div>
+                                <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-500">New Date</label>
+                                <input
+                                    type="date"
+                                    value={rescheduleDate}
+                                    onChange={(e) => setRescheduleDate(e.target.value)}
+                                    className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700 outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100"
+                                />
+                            </div>
+                            <div className="grid grid-cols-2 gap-3">
+                                <div>
+                                    <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-500">Start Time</label>
+                                    <input
+                                        type="time"
+                                        value={rescheduleStartTime}
+                                        onChange={(e) => setRescheduleStartTime(e.target.value)}
+                                        className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700 outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100"
+                                    />
+                                </div>
+                                <div>
+                                    <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-500">End Time</label>
+                                    <input
+                                        type="time"
+                                        value={rescheduleEndTime}
+                                        onChange={(e) => setRescheduleEndTime(e.target.value)}
+                                        className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700 outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100"
+                                    />
+                                </div>
+                            </div>
+                        </div>
+
+                        <div className="mt-5 flex gap-3">
+                            <button
+                                type="button"
+                                onClick={submitReschedule}
+                                className="flex-1 rounded-lg bg-indigo-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-indigo-700"
+                            >
+                                Reschedule
+                            </button>
+                            <button
+                                type="button"
+                                onClick={closeRescheduleModal}
+                                className="flex-1 rounded-lg border border-slate-200 px-4 py-2.5 text-sm font-medium text-slate-600 hover:bg-slate-50"
+                            >
+                                Cancel
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {selectedEntry && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40" onClick={closeCompletionModal}>
+                    <div className="w-full max-w-md rounded-2xl bg-white p-6 shadow-xl" onClick={(e) => e.stopPropagation()}>
+                        <h2 className="text-xl font-semibold text-slate-900">Shift Follow-Up</h2>
+                        <p className="mt-1 text-sm text-slate-500">
+                            <span className="font-medium">{selectedEntry.staffName}</span> {selectedEntry.purpose || 'Scheduled visit'} for <span className="font-medium">{selectedEntry.patientName}</span>
+                        </p>
+
+                        <div className="mt-4">
+                            <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-500">Notes</label>
+                            <textarea
+                                value={completionNotes}
+                                onChange={(e) => setCompletionNotes(e.target.value)}
+                                rows={4}
+                                placeholder="Add any notes about this shift..."
+                                className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700 outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100"
+                            />
+                        </div>
+
+                        <div className="mt-5 flex gap-3">
+                            <button
+                                type="button"
+                                onClick={markCompleted}
+                                className="flex-1 rounded-lg bg-emerald-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-emerald-700"
+                            >
+                                Mark Completed
+                            </button>
+                            <button
+                                type="button"
+                                onClick={markMissed}
+                                className="flex-1 rounded-lg bg-red-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-red-700"
+                            >
+                                Missed Shift
+                            </button>
+                        </div>
+
+                        <button
+                            type="button"
+                            onClick={closeCompletionModal}
+                            className="mt-3 w-full rounded-lg border border-slate-200 px-4 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50"
+                        >
+                            Cancel
+                        </button>
                     </div>
                 </div>
             )}

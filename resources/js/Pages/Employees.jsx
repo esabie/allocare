@@ -147,10 +147,25 @@ export default function Employees({ employees = [] }) {
                                         <span className="font-semibold text-emerald-700">{visibleEmployees.length}</span> results found in clinical staff
                                     </p>
                                 </div>
-                                <Link href={route('employees.create')} className="rounded-xl bg-slate-900 px-5 py-3 text-sm font-semibold text-white shadow-sm">
-                                    + Add Employee
-                                </Link>
+                                <div className="flex items-center gap-3">
+                                    <div className="relative">
+                                        <span className="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-2.5 text-slate-400">
+                                            <svg xmlns="http://www.w3.org/2000/svg" className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-4.35-4.35M11 19a8 8 0 100-16 8 8 0 000 16z" /></svg>
+                                        </span>
+                                        <input
+                                            type="search"
+                                            placeholder="Search..."
+                                            value={searchTerm}
+                                            onChange={(e) => setSearchTerm(e.target.value)}
+                                            className="w-44 rounded-lg border border-slate-200 bg-white py-2 pl-8 pr-3 text-xs text-slate-700 outline-none transition placeholder:text-slate-400 focus:w-56 focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100"
+                                        />
+                                    </div>
+                                    <Link href={route('employees.create')} className="rounded-xl bg-slate-900 px-5 py-2.5 text-sm font-semibold text-white shadow-sm">
+                                        + Add Employee
+                                    </Link>
+                                </div>
                             </header>
+
 
                             <section className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
                                 {paginatedEmployees.map((employee) => (
@@ -208,11 +223,20 @@ export default function Employees({ employees = [] }) {
                                             </div>
                                         </div>
 
-                                        <div className={`mx-5 mb-5 rounded-xl px-4 py-3 text-sm ${employee.statusClass}`}>
+                                        <div className={`mx-5 mb-3 rounded-xl px-4 py-3 text-sm ${employee.statusClass}`}>
                                             <div className="mb-1">
                                                 <span className="text-xs font-semibold uppercase tracking-wide">{employee.status}</span>
                                             </div>
                                             <p className="font-medium">{formatLoginContext(employee)}</p>
+                                        </div>
+
+                                        <div className="mx-5 mb-5">
+                                            <Link
+                                                href={route('employees.profile', employee.id)}
+                                                className="block w-full rounded-lg border border-slate-200 bg-slate-50 py-2 text-center text-xs font-semibold text-slate-700 transition hover:bg-slate-100"
+                                            >
+                                                View Profile
+                                            </Link>
                                         </div>
                                     </article>
                                 ))}
