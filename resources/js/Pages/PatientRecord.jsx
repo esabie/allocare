@@ -1,9 +1,14 @@
-import { Head, Link } from '@inertiajs/react';
+import { Head, Link, router, usePage } from '@inertiajs/react';
+import { useState } from 'react';
 import PatientRecordSidebar from '@/Components/PatientRecordSidebar';
 import AppHeaderNav from '@/Components/AppHeaderNav';
 import ProfileMenu from '@/Components/ProfileMenu';
 
 export default function PatientRecord({ patientSlug = 'sarah-jenkins', patient = null, latestVitals = null, activeAlerts = [], nextVisit = null, medicationStatus = null }) {
+    const authUser = usePage().props?.auth?.user;
+    const isSuperAdmin = authUser?.primary_role === 'super_admin';
+    const [showRagUpdate, setShowRagUpdate] = useState(false);
+    const [newRag, setNewRag] = useState(patient?.ragStatus || '');
     const patientName = patient?.name || 'Unknown Patient';
     const patientDob = patient?.dob || 'Not provided';
     const patientNhs = patient?.nhsNumber || 'Not provided';
@@ -16,7 +21,7 @@ export default function PatientRecord({ patientSlug = 'sarah-jenkins', patient =
     const patientSocialServicesNumber = patient?.socialServicesNumber || 'Not provided';
     const patientStaffingRatio = patient?.staffingRatio || '--';
     const patientAllergies = Array.isArray(patient?.allergies) && patient.allergies.length ? patient.allergies : ['None recorded'];
-    const statusLabel = patient?.status || 'ACTIVE';
+    const statusLabel = patient?.ragStatus || patient?.status || 'GREEN';
     const ragLabel = patientRagStatus === 'Not set'
         ? 'Not set'
         : patientRagStatus.charAt(0).toUpperCase() + patientRagStatus.slice(1).toLowerCase();
@@ -99,7 +104,7 @@ export default function PatientRecord({ patientSlug = 'sarah-jenkins', patient =
                                     <p className="mt-1 text-sm text-slate-500">DOB: {patientDob} • NHS: {patientNhs}</p>
                                 </div>
                                 <div className="flex items-center gap-2">
-                                    <span className="rounded-full bg-rose-100 px-3 py-1 text-xs font-semibold uppercase tracking-wide text-rose-700">
+                                    <span className={`rounded-full px-3 py-1 text-xs font-semibold uppercase tracking-wide ${ragBadgeClass}`}>
                                         {statusLabel}
                                     </span>
                                 </div>
@@ -129,10 +134,65 @@ export default function PatientRecord({ patientSlug = 'sarah-jenkins', patient =
                             </article>
 
                             <article className="rounded-2xl bg-white p-5">
-                                <h2 className="mb-3 text-2xl font-semibold text-slate-900">Clinical Risk Summary</h2>
-                                <p className="mb-3 rounded-lg bg-slate-50 p-2 text-sm font-semibold text-slate-700">
-                                    RAG Rating: <span className="uppercase">{patientRagStatus}</span>
-                                </p>
+                                <div className="mb-3 flex items-center justify-between">
+                                    <h2 className="text-2xl font-semibold text-slate-900">Clinical Risk Summary</h2>
+                                    {isSuperAdmin && !showRagUpdate && (
+                                        <button
+                                            type="button"
+                                            onClick={() => setShowRagUpdate(true)}
+                                            className="rounded-lg bg-slate-900 px-3 py-1.5 text-[11px] font-semibold text-white"
+                                        >
+                                            Update RAG
+                                        </button>
+                                    )}
+                                </div>
+                                {showRagUpdate && isSuperAdmin ? (
+                                    <div className="mb-4 rounded-lg border border-slate-200 bg-slate-50 p-4">
+                                        <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Change RAG Status</p>
+                                        <div className="flex flex-wrap gap-2">
+                                            {['GREEN', 'AMBER', 'RED'].map((rag) => (
+                                                <button
+                                                    key={rag}
+                                                    type="button"
+                                                    onClick={() => setNewRag(rag)}
+                                                    className={`rounded-full px-4 py-1.5 text-xs font-semibold transition ${
+                                                        newRag === rag
+                                                            ? rag === 'GREEN' ? 'bg-emerald-600 text-white' : rag === 'AMBER' ? 'bg-amber-500 text-white' : 'bg-red-600 text-white'
+                                                            : 'bg-white border border-slate-200 text-slate-600 hover:bg-slate-100'
+                                                    }`}
+                                                >
+                                                    {rag}
+                                                </button>
+                                            ))}
+                                        </div>
+                                        <div className="mt-3 flex gap-2">
+                                            <button
+                                                type="button"
+                                                onClick={() => {
+                                                    router.patch(route('patients.rag-status', patientSlug), { rag_status: newRag }, {
+                                                        preserveScroll: true,
+                                                        onSuccess: () => setShowRagUpdate(false),
+                                                    });
+                                                }}
+                                                disabled={newRag === patient?.ragStatus}
+                                                className="rounded-lg bg-emerald-600 px-4 py-1.5 text-xs font-semibold text-white hover:bg-emerald-700 disabled:opacity-50"
+                                            >
+                                                Save
+                                            </button>
+                                            <button
+                                                type="button"
+                                                onClick={() => { setShowRagUpdate(false); setNewRag(patient?.ragStatus || ''); }}
+                                                className="rounded-lg border border-slate-200 px-4 py-1.5 text-xs font-medium text-slate-600"
+                                            >
+                                                Cancel
+                                            </button>
+                                        </div>
+                                    </div>
+                                ) : (
+                                    <p className="mb-3 rounded-lg bg-slate-50 p-2 text-sm font-semibold text-slate-700">
+                                        RAG Rating: <span className="uppercase">{patientRagStatus}</span>
+                                    </p>
+                                )}
                                 <div className="mb-3 flex flex-wrap gap-2">
                                     <span className="rounded-full bg-rose-100 px-2 py-1 text-xs font-semibold text-rose-700">Fall Risk (High)</span>
                                     <span className="rounded-full bg-emerald-100 px-2 py-1 text-xs font-semibold text-emerald-700">Skin Integrity (Stable)</span>

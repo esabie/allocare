@@ -6,25 +6,25 @@ import ProfileMenu from '@/Components/ProfileMenu';
 const statCards = [
     {
         title: 'Visits',
-        total: '124',
+        total: '0',
         label: 'WEEKLY',
         ringColor: 'border-emerald-500',
         metrics: [
-            { name: 'Complete', value: 80, color: 'bg-emerald-500' },
-            { name: 'In-Progress', value: 15, color: 'bg-sky-500' },
-            { name: 'Upcoming', value: 10, color: 'bg-amber-400' },
-            { name: 'Missed', value: 10, color: 'bg-red-400' },
+            { name: 'Complete', value: 0, color: 'bg-emerald-500' },
+            { name: 'In-Progress', value: 0, color: 'bg-sky-500' },
+            { name: 'Upcoming', value: 0, color: 'bg-amber-400' },
+            { name: 'Missed', value: 0, color: 'bg-red-400' },
         ],
     },
     {
         title: 'Tasks',
-        total: '340',
+        total: '0',
         label: 'WEEKLY',
         ringColor: 'border-blue-500',
         metrics: [
-            { name: 'Complete', value: 290, color: 'bg-emerald-500' },
-            { name: 'Partial', value: 30, color: 'bg-amber-400' },
-            { name: 'Missed', value: 20, color: 'bg-red-400' },
+            { name: 'Complete', value: 0, color: 'bg-emerald-500' },
+            { name: 'Partial', value: 0, color: 'bg-amber-400' },
+            { name: 'Missed', value: 0, color: 'bg-red-400' },
         ],
     },
 ];
@@ -162,7 +162,7 @@ export default function Welcome() {
             metrics: [
                 { ...statCards[0].metrics[0], value: dashboardStats?.visits?.metrics?.complete ?? statCards[0].metrics[0].value },
                 { ...statCards[0].metrics[1], value: dashboardStats?.visits?.metrics?.inProgress ?? statCards[0].metrics[1].value },
-                { ...statCards[0].metrics[2], value: dashboardStats?.visits?.metrics?.partial ?? statCards[0].metrics[2].value },
+                { ...statCards[0].metrics[2], value: dashboardStats?.visits?.metrics?.upcoming ?? statCards[0].metrics[2].value },
                 { ...statCards[0].metrics[3], value: dashboardStats?.visits?.metrics?.missed ?? statCards[0].metrics[3].value },
             ],
         },
@@ -183,8 +183,9 @@ export default function Welcome() {
         ['Bookings', String(dashboardStats?.operations?.bookings ?? operations[2][1])],
     ];
     const dashboardAlerts = Array.isArray(dashboardStats?.careAlerts) && dashboardStats.careAlerts.length > 0
-        ? dashboardStats.careAlerts
-        : careAlerts;
+        ? dashboardStats.careAlerts.slice(0, 4)
+        : [];
+    const totalCareAlerts = dashboardStats?.totalCareAlerts || dashboardAlerts.length;
 
     return (
         <>
@@ -285,17 +286,36 @@ export default function Welcome() {
                                     <span className="rounded-lg bg-slate-100 px-2 py-1 text-xs font-semibold text-slate-500">Care</span>
                                 </div>
                                 <div className="space-y-3">
-                                    {dashboardAlerts.map((alert) => (
-                                        <div key={alert.patient} className={`rounded-xl border-l-4 p-4 ${alert.accent} ${alert.panel}`}>
-                                            <p className="mb-2 text-[11px] font-semibold tracking-wide text-slate-500">{alert.label}</p>
-                                            <p className="font-semibold text-slate-800">{alert.patient}</p>
-                                            <p className="mb-3 text-sm text-slate-600">{alert.details}</p>
-                                            <button type="button" className="rounded-lg bg-slate-900 px-3 py-1.5 text-xs font-semibold text-white">
-                                                {alert.action}
-                                            </button>
+                                    {dashboardAlerts.length === 0 ? (
+                                        <div className="rounded-xl border border-slate-200 bg-slate-50 p-4 text-center">
+                                            <p className="text-sm text-slate-500">No active care alerts. All clear.</p>
                                         </div>
-                                    ))}
+                                    ) : (
+                                        dashboardAlerts.map((alert, idx) => (
+                                            <div key={`${alert.patient}-${idx}`} className={`rounded-xl border-l-4 p-4 ${alert.accent} ${alert.panel}`}>
+                                                <p className="mb-2 text-[11px] font-semibold tracking-wide text-slate-500">{alert.label}</p>
+                                                <p className="font-semibold text-slate-800">{alert.patient}</p>
+                                                <p className="mb-3 text-sm text-slate-600">{alert.details}</p>
+                                                {alert.href ? (
+                                                    <Link href={alert.href} className="inline-block rounded-lg bg-slate-900 px-3 py-1.5 text-xs font-semibold text-white">
+                                                        {alert.action}
+                                                    </Link>
+                                                ) : (
+                                                    <button type="button" className="rounded-lg bg-slate-900 px-3 py-1.5 text-xs font-semibold text-white">
+                                                        {alert.action}
+                                                    </button>
+                                                )}
+                                            </div>
+                                        ))
+                                    )}
                                 </div>
+                                {totalCareAlerts > 4 && (
+                                    <div className="mt-3 text-center">
+                                        <Link href="/care-alerts" className="text-sm font-semibold text-emerald-700 hover:text-emerald-800">
+                                            Open full Care Alerts →
+                                        </Link>
+                                    </div>
+                                )}
                             </article>
                         </section>
 

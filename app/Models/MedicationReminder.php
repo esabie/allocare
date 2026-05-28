@@ -6,27 +6,21 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
-class MedicationAdministration extends Model
+class MedicationReminder extends Model
 {
     use HasFactory;
 
     protected $fillable = [
         'patient_id',
         'patient_medication_id',
-        'administered_by_user_id',
-        'status',
-        'administered_at',
-        'scheduled_for',
-        'notes',
-        'source_mar_slug',
-        'reason',
-        'witness_user_id',
-        'witness_name',
+        'due_at',
+        'dismissed',
+        'dismissed_by_user_id',
     ];
 
     protected $casts = [
-        'administered_at' => 'datetime',
-        'scheduled_for' => 'datetime',
+        'due_at' => 'datetime',
+        'dismissed' => 'boolean',
     ];
 
     public function patient(): BelongsTo
@@ -39,13 +33,8 @@ class MedicationAdministration extends Model
         return $this->belongsTo(PatientMedication::class, 'patient_medication_id');
     }
 
-    public function administeredBy(): BelongsTo
+    public function dismissedBy(): BelongsTo
     {
-        return $this->belongsTo(User::class, 'administered_by_user_id');
-    }
-
-    public function witness(): BelongsTo
-    {
-        return $this->belongsTo(User::class, 'witness_user_id');
+        return $this->belongsTo(User::class, 'dismissed_by_user_id');
     }
 }

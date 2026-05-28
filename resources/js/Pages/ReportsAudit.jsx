@@ -62,6 +62,14 @@ const reportTypes = [
         tags: ['Coming Soon'],
     },
     {
+        id: 'medications',
+        title: 'Medication Audit',
+        description: 'Compliance rates, refusals, omissions, controlled drug tracking, and PRN usage.',
+        status: 'ACTIVE',
+        tags: ['eMAR', 'Compliance'],
+        href: 'reports.medications',
+    },
+    {
         id: 'clinical',
         title: 'Clinical Outcomes',
         description: 'Patient observations, vital trends, and health outcome metrics.',

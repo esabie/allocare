@@ -17,6 +17,7 @@ class PatientSchedule extends Model
         'end_at',
         'purpose',
         'notes',
+        'status',
         'created_by_user_id',
     ];
 
