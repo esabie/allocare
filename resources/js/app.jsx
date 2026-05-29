@@ -7,10 +7,8 @@ import { resolvePageComponent } from 'laravel-vite-plugin/inertia-helpers';
 import { debugLogger } from './utils/debugLogger';
 import { flushOfflineQueue } from './utils/offlineQueue';
 
-const appName = import.meta.env.VITE_APP_NAME || 'Laravel';
-
 createInertiaApp({
-    title: (title) => `${title} - ${appName}`,
+    title: () => 'AlloCare',
     resolve: (name) => {
         debugLogger.info('Inertia', 'Resolving page component', { name });
         return resolvePageComponent(`./Pages/${name}.jsx`, import.meta.glob('./Pages/**/*.jsx'));

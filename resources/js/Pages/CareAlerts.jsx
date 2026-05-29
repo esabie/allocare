@@ -10,7 +10,7 @@ export default function CareAlerts({ alerts = [] }) {
 
             <div className="min-h-screen bg-slate-100 text-slate-700">
                 <div className="flex w-full">
-                    <DashboardSidebar active="dashboard" />
+                    <DashboardSidebar active="care_alerts" />
 
                     <main className="flex-1 p-4 sm:p-6 lg:p-8">
                         <header className="mb-6 flex flex-wrap items-center justify-between gap-4 rounded-2xl bg-white px-5 py-4">

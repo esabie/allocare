@@ -722,15 +722,41 @@ Route::get('/analytics', function () {
                 ->whereBetween('start_at', [$dayStart, $dayEnd])
                 ->get();
 
+            $completed = $daySchedules->where('status', 'completed')->count();
+            $missed = $daySchedules->where('status', 'missed')->count();
+            $inProgress = $daySchedules->filter(function (PatientSchedule $schedule) use ($now) {
+                return ! $schedule->status
+                    && optional($schedule->start_at)->lte($now)
+                    && optional($schedule->end_at)->gte($now);
+            })->count();
+            $upcoming = $daySchedules->filter(function (PatientSchedule $schedule) use ($now) {
+                return ! $schedule->status && optional($schedule->start_at)->gt($now);
+            })->count();
+            $overdue = $daySchedules->filter(function (PatientSchedule $schedule) use ($now) {
+                return ! $schedule->status && optional($schedule->end_at)->lt($now);
+            })->count();
+
             return [
                 'label' => $dayStart->format('D d M'),
+                'shortLabel' => $dayStart->format('D'),
                 'total' => $daySchedules->count(),
-                'completed' => $daySchedules->where('status', 'completed')->count(),
-                'missed' => $daySchedules->where('status', 'missed')->count(),
+                'completed' => $completed,
+                'missed' => $missed,
+                'in_progress' => $inProgress,
+                'upcoming' => $upcoming,
+                'overdue' => $overdue,
             ];
         })
         ->values()
         ->all();
+
+    $visitStatusTotals = [
+        'completed' => $visitsCompleted,
+        'missed' => $visitsMissed,
+        'in_progress' => $visitsInProgress,
+        'upcoming' => $visitsUpcoming,
+        'overdue' => $visitsOverdue,
+    ];
 
     $recentMissedShifts = PatientSchedule::query()
         ->with(['patient:id,name,url_key', 'assignedUser:id,name'])
@@ -751,19 +777,6 @@ Route::get('/analytics', function () {
         ->values()
         ->all();
 
-    $recentActivity = collect(AuditTrail::fetchActivityLogsForUi(20))
-        ->map(function (array $log) {
-            return [
-                'id' => $log['id'] ?? null,
-                'createdAt' => $log['created_at'] ?? null,
-                'user' => $log['user_name'] ?? null,
-                'description' => $log['description'] ?? '-',
-                'path' => $log['path'] ?? '-',
-            ];
-        })
-        ->values()
-        ->all();
-
     return Inertia::render('Analytics', [
         'summary' => [
             'visitsTotal' => $visitsTotal,
@@ -776,8 +789,8 @@ Route::get('/analytics', function () {
         ],
         'careAlerts' => $careAlerts,
         'dailyVisitTrend' => $dailyVisitTrend,
+        'visitStatusTotals' => $visitStatusTotals,
         'recentMissedShifts' => $recentMissedShifts,
-        'recentActivity' => $recentActivity,
     ]);
 })->middleware(['auth', 'verified'])->name('analytics');
 

@@ -4,7 +4,10 @@
         <meta charset="utf-8">
         <meta name="viewport" content="width=device-width, initial-scale=1">
 
-        <title inertia>{{ config('app.name', 'Laravel') }}</title>
+        <title inertia>AlloCare</title>
+
+        <link rel="icon" href="/images/allocare-logo.png" type="image/png">
+        <link rel="apple-touch-icon" href="/images/allocare-logo.png">
 
         <!-- PWA -->
         <link rel="manifest" href="/manifest.json">

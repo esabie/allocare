@@ -3,18 +3,13 @@ import AppHeaderNav from '@/Components/AppHeaderNav';
 import DashboardSidebar from '@/Components/DashboardSidebar';
 import ProfileMenu from '@/Components/ProfileMenu';
 
-function formatDateTime(value) {
-    if (!value) return '-';
-    const parsed = new Date(value);
-    if (Number.isNaN(parsed.getTime())) return '-';
-    return parsed.toLocaleString([], {
-        year: 'numeric',
-        month: 'short',
-        day: '2-digit',
-        hour: '2-digit',
-        minute: '2-digit',
-    });
-}
+const VISIT_STATUS_SERIES = [
+    { key: 'completed', label: 'Completed', bar: 'bg-emerald-500', text: 'text-emerald-700' },
+    { key: 'in_progress', label: 'In progress', bar: 'bg-sky-500', text: 'text-sky-700' },
+    { key: 'upcoming', label: 'Upcoming', bar: 'bg-violet-500', text: 'text-violet-700' },
+    { key: 'overdue', label: 'Overdue', bar: 'bg-amber-500', text: 'text-amber-700' },
+    { key: 'missed', label: 'Missed', bar: 'bg-rose-500', text: 'text-rose-700' },
+];
 
 function MetricCard({ label, value, accent = 'text-slate-900' }) {
     return (
@@ -25,12 +20,145 @@ function MetricCard({ label, value, accent = 'text-slate-900' }) {
     );
 }
 
+function VisitStatusLegend() {
+    return (
+        <ul className="flex flex-wrap gap-x-4 gap-y-2 text-xs text-slate-600">
+            {VISIT_STATUS_SERIES.map((status) => (
+                <li key={status.key} className="flex items-center gap-2">
+                    <span className={`h-2.5 w-2.5 rounded-sm ${status.bar}`} aria-hidden />
+                    <span>{status.label}</span>
+                </li>
+            ))}
+        </ul>
+    );
+}
+
+function VisitStatusWeekBar({ visitStatusTotals = {} }) {
+    const total = VISIT_STATUS_SERIES.reduce(
+        (sum, status) => sum + (visitStatusTotals[status.key] ?? 0),
+        0,
+    );
+
+    if (total === 0) {
+        return (
+            <p className="rounded-xl bg-slate-50 px-4 py-3 text-sm text-slate-500">
+                No scheduled visits this week.
+            </p>
+        );
+    }
+
+    return (
+        <div>
+            <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">
+                This week by status
+            </p>
+            <div className="flex h-3 overflow-hidden rounded-full bg-slate-100">
+                {VISIT_STATUS_SERIES.map((status) => {
+                    const count = visitStatusTotals[status.key] ?? 0;
+                    if (!count) return null;
+
+                    return (
+                        <div
+                            key={status.key}
+                            className={status.bar}
+                            style={{ width: `${(count / total) * 100}%` }}
+                            title={`${status.label}: ${count}`}
+                        />
+                    );
+                })}
+            </div>
+            <ul className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-5">
+                {VISIT_STATUS_SERIES.map((status) => (
+                    <li key={status.key} className="rounded-lg bg-slate-50 px-2 py-1.5 text-center">
+                        <p className={`text-lg font-semibold ${status.text}`}>
+                            {visitStatusTotals[status.key] ?? 0}
+                        </p>
+                        <p className="text-[11px] text-slate-500">{status.label}</p>
+                    </li>
+                ))}
+            </ul>
+        </div>
+    );
+}
+
+function VisitStatusTrendChart({ dailyVisitTrend = [] }) {
+    const maxDayTotal = Math.max(...dailyVisitTrend.map((day) => day.total ?? 0), 1);
+    const chartHeight = 180;
+
+    if (dailyVisitTrend.length === 0) {
+        return (
+            <p className="rounded-xl bg-slate-50 px-4 py-8 text-center text-sm text-slate-500">
+                No visit trend data available.
+            </p>
+        );
+    }
+
+    return (
+        <div>
+            <div
+                className="flex items-end justify-between gap-2 sm:gap-3"
+                style={{ minHeight: chartHeight }}
+                role="img"
+                aria-label="Seven day visit status trend chart"
+            >
+                {dailyVisitTrend.map((day) => {
+                    const dayTotal = day.total ?? 0;
+                    const columnHeight =
+                        dayTotal > 0 ? Math.max(8, Math.round((dayTotal / maxDayTotal) * chartHeight)) : 0;
+
+                    return (
+                        <div
+                            key={day.label}
+                            className="flex min-w-0 flex-1 flex-col items-center gap-2"
+                        >
+                            <p className="text-xs font-semibold text-slate-700">{dayTotal}</p>
+                            <div
+                                className="flex w-full max-w-[52px] flex-col justify-end rounded-t-md bg-slate-100"
+                                style={{ height: chartHeight }}
+                            >
+                                {columnHeight > 0 ? (
+                                    <div
+                                        className="flex w-full flex-col-reverse overflow-hidden rounded-t-md"
+                                        style={{ height: columnHeight }}
+                                    >
+                                        {VISIT_STATUS_SERIES.map((status) => {
+                                            const count = day[status.key] ?? 0;
+                                            if (!count) return null;
+
+                                            return (
+                                                <div
+                                                    key={status.key}
+                                                    className={`w-full ${status.bar}`}
+                                                    style={{
+                                                        height: `${(count / dayTotal) * 100}%`,
+                                                    }}
+                                                    title={`${status.label}: ${count}`}
+                                                />
+                                            );
+                                        })}
+                                    </div>
+                                ) : null}
+                            </div>
+                            <p className="truncate text-center text-[11px] font-medium text-slate-500">
+                                {day.shortLabel ?? day.label}
+                            </p>
+                        </div>
+                    );
+                })}
+            </div>
+            <div className="mt-4 border-t border-slate-100 pt-4">
+                <VisitStatusLegend />
+            </div>
+        </div>
+    );
+}
+
 export default function Analytics({
     summary = {},
     careAlerts = [],
     dailyVisitTrend = [],
+    visitStatusTotals = {},
     recentMissedShifts = [],
-    recentActivity = [],
 }) {
     return (
         <>
@@ -55,7 +183,7 @@ export default function Analytics({
                         <section className="mb-4 rounded-2xl bg-white px-5 py-4">
                             <h1 className="text-2xl font-semibold text-slate-900">Operational Analytics</h1>
                             <p className="text-sm text-slate-500">
-                                Live view of visits, missed shifts, open care alerts, and recent user activity.
+                                Live view of visits, status trends, missed shifts, and open care alerts.
                             </p>
                         </section>
 
@@ -68,37 +196,14 @@ export default function Analytics({
 
                         <section className="mb-4 grid grid-cols-1 gap-4 xl:grid-cols-3">
                             <article className="rounded-2xl border border-slate-200 bg-white p-5 xl:col-span-2">
-                                <h2 className="mb-4 text-lg font-semibold text-slate-900">7-Day Visit Trend</h2>
-                                <div className="overflow-x-auto">
-                                    <table className="w-full min-w-[520px] border-collapse text-left text-sm">
-                                        <thead className="bg-slate-50">
-                                            <tr>
-                                                <th className="border border-slate-200 px-3 py-2">Day</th>
-                                                <th className="border border-slate-200 px-3 py-2">Total</th>
-                                                <th className="border border-slate-200 px-3 py-2">Completed</th>
-                                                <th className="border border-slate-200 px-3 py-2">Missed</th>
-                                            </tr>
-                                        </thead>
-                                        <tbody>
-                                            {dailyVisitTrend.length === 0 ? (
-                                                <tr>
-                                                    <td colSpan={4} className="border border-slate-200 px-3 py-6 text-center text-slate-500">
-                                                        No visit trend data available.
-                                                    </td>
-                                                </tr>
-                                            ) : (
-                                                dailyVisitTrend.map((row) => (
-                                                    <tr key={row.label} className="odd:bg-white even:bg-slate-50/30">
-                                                        <td className="border border-slate-200 px-3 py-2">{row.label}</td>
-                                                        <td className="border border-slate-200 px-3 py-2 font-semibold text-slate-800">{row.total}</td>
-                                                        <td className="border border-slate-200 px-3 py-2 text-emerald-700">{row.completed}</td>
-                                                        <td className="border border-slate-200 px-3 py-2 text-rose-700">{row.missed}</td>
-                                                    </tr>
-                                                ))
-                                            )}
-                                        </tbody>
-                                    </table>
+                                <h2 className="mb-1 text-lg font-semibold text-slate-900">Visit status trend</h2>
+                                <p className="mb-5 text-sm text-slate-500">
+                                    Last 7 days — stacked bars show completed, in progress, upcoming, overdue, and missed visits.
+                                </p>
+                                <div className="mb-6">
+                                    <VisitStatusWeekBar visitStatusTotals={visitStatusTotals} />
                                 </div>
+                                <VisitStatusTrendChart dailyVisitTrend={dailyVisitTrend} />
                             </article>
 
                             <article className="rounded-2xl border border-slate-200 bg-white p-5">
@@ -114,7 +219,7 @@ export default function Analytics({
                             </article>
                         </section>
 
-                        <section className="grid grid-cols-1 gap-4 xl:grid-cols-2">
+                        <section>
                             <article className="rounded-2xl border border-slate-200 bg-white p-5">
                                 <h2 className="mb-4 text-lg font-semibold text-slate-900">Recently Missed Shifts</h2>
                                 <div className="overflow-x-auto">
@@ -145,26 +250,6 @@ export default function Analytics({
                                         </tbody>
                                     </table>
                                 </div>
-                            </article>
-
-                            <article className="rounded-2xl border border-slate-200 bg-white p-5">
-                                <h2 className="mb-4 text-lg font-semibold text-slate-900">Recent Activity</h2>
-                                <ul className="space-y-3">
-                                    {recentActivity.length === 0 ? (
-                                        <li className="rounded-xl bg-slate-50 px-4 py-6 text-center text-sm text-slate-500">
-                                            No activity records found.
-                                        </li>
-                                    ) : (
-                                        recentActivity.map((item, index) => (
-                                            <li key={item.id ?? `${item.createdAt ?? 'row'}-${index}`} className="rounded-xl border border-slate-200 px-3 py-2">
-                                                <p className="text-xs font-medium text-slate-500">{formatDateTime(item.createdAt)}</p>
-                                                <p className="mt-1 text-sm font-semibold text-slate-800">{item.user || 'System user'}</p>
-                                                <p className="text-sm text-slate-600">{item.description}</p>
-                                                <p className="mt-1 text-xs font-mono text-slate-400">{item.path || '-'}</p>
-                                            </li>
-                                        ))
-                                    )}
-                                </ul>
                             </article>
                         </section>
                     </main>
