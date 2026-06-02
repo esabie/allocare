@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from 'react';
 import ApplicationLogo from '@/Components/ApplicationLogo';
 import AppHeaderNav from '@/Components/AppHeaderNav';
 import ProfileMenu from '@/Components/ProfileMenu';
+import { printCarePlan } from '@/utils/carePlanPrint';
 import { postWithOfflineQueue } from '@/utils/offlineQueue';
 
 const sideTabs = [
@@ -200,6 +201,15 @@ export default function PatientCarePlanDetail({ patientSlug = 'sarah-jenkins', p
             window.removeEventListener('offline', onOffline);
         };
     }, []);
+
+    const handlePrintCarePlan = () => {
+        if (!formContainerRef.current) return;
+        printCarePlan({
+            planName,
+            patientProfile,
+            container: formContainerRef.current,
+        });
+    };
 
     return (
         <>
@@ -582,7 +592,7 @@ export default function PatientCarePlanDetail({ patientSlug = 'sarah-jenkins', p
                                                 </div>
                                             </div>
                                         </div>
-                                        <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-3">
+                                        <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-3" data-print-exclude>
                                             {['Person / Parent', 'Manager', 'Clinical Lead'].map((label) => (
                                                 <button
                                                     key={label}
@@ -614,13 +624,13 @@ export default function PatientCarePlanDetail({ patientSlug = 'sarah-jenkins', p
                                                 />
                                             </div>
                                         </div>
-                                        <div className="mt-6 flex flex-wrap items-center justify-end gap-3">
+                                        <div className="mt-6 flex flex-wrap items-center justify-end gap-3" data-print-exclude>
                                             <button type="button" className="rounded-xl border border-slate-200 px-5 py-2.5 text-sm font-semibold text-slate-700">
                                                 Cancel & Discard
                                             </button>
                                             <button
                                                 type="button"
-                                                onClick={() => window.print()}
+                                                onClick={handlePrintCarePlan}
                                                 className="rounded-xl border border-slate-200 bg-white px-5 py-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-50"
                                             >
                                                 Print
@@ -1088,7 +1098,7 @@ export default function PatientCarePlanDetail({ patientSlug = 'sarah-jenkins', p
                                                 </div>
                                             </div>
                                         </div>
-                                        <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-3">
+                                        <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-3" data-print-exclude>
                                             {['Person / Parent', 'Manager', 'Clinical Lead'].map((label) => (
                                                 <button
                                                     key={label}
@@ -1120,13 +1130,13 @@ export default function PatientCarePlanDetail({ patientSlug = 'sarah-jenkins', p
                                                 />
                                             </div>
                                         </div>
-                                        <div className="mt-6 flex flex-wrap items-center justify-end gap-3">
+                                        <div className="mt-6 flex flex-wrap items-center justify-end gap-3" data-print-exclude>
                                             <button type="button" className="rounded-xl border border-slate-200 px-5 py-2.5 text-sm font-semibold text-slate-700">
                                                 Cancel & Discard
                                             </button>
                                             <button
                                                 type="button"
-                                                onClick={() => window.print()}
+                                                onClick={handlePrintCarePlan}
                                                 className="rounded-xl border border-slate-200 bg-white px-5 py-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-50"
                                             >
                                                 Print
@@ -1377,7 +1387,7 @@ export default function PatientCarePlanDetail({ patientSlug = 'sarah-jenkins', p
                                                 </div>
                                             </div>
                                         </div>
-                                        <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-3">
+                                        <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-3" data-print-exclude>
                                             {['Person / Parent', 'Manager', 'Clinical Lead'].map((label) => (
                                                 <button
                                                     key={label}
@@ -1409,13 +1419,13 @@ export default function PatientCarePlanDetail({ patientSlug = 'sarah-jenkins', p
                                                 />
                                             </div>
                                         </div>
-                                        <div className="mt-6 flex flex-wrap items-center justify-end gap-3">
+                                        <div className="mt-6 flex flex-wrap items-center justify-end gap-3" data-print-exclude>
                                             <button type="button" className="rounded-xl border border-slate-200 px-5 py-2.5 text-sm font-semibold text-slate-700">
                                                 Cancel & Discard
                                             </button>
                                             <button
                                                 type="button"
-                                                onClick={() => window.print()}
+                                                onClick={handlePrintCarePlan}
                                                 className="rounded-xl border border-slate-200 bg-white px-5 py-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-50"
                                             >
                                                 Print
@@ -1665,7 +1675,7 @@ export default function PatientCarePlanDetail({ patientSlug = 'sarah-jenkins', p
                                                 </div>
                                             </div>
                                         </div>
-                                        <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-3">
+                                        <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-3" data-print-exclude>
                                             {['Person / Parent', 'Manager', 'Clinical Lead'].map((label) => (
                                                 <button
                                                     key={label}
@@ -1697,13 +1707,13 @@ export default function PatientCarePlanDetail({ patientSlug = 'sarah-jenkins', p
                                                 />
                                             </div>
                                         </div>
-                                        <div className="mt-6 flex flex-wrap items-center justify-end gap-3">
+                                        <div className="mt-6 flex flex-wrap items-center justify-end gap-3" data-print-exclude>
                                             <button type="button" className="rounded-xl border border-slate-200 px-5 py-2.5 text-sm font-semibold text-slate-700">
                                                 Cancel & Discard
                                             </button>
                                             <button
                                                 type="button"
-                                                onClick={() => window.print()}
+                                                onClick={handlePrintCarePlan}
                                                 className="rounded-xl border border-slate-200 bg-white px-5 py-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-50"
                                             >
                                                 Print
@@ -1984,7 +1994,7 @@ export default function PatientCarePlanDetail({ patientSlug = 'sarah-jenkins', p
                                             className={`w-full rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm text-slate-700 ${readOnlyClasses}`}
                                             placeholder={`${patientProfile.governanceName} retains capacity regarding personal hygiene preferences and has explicitly consented to this plan during the goal-setting session.`}
                                         />
-                                        <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-3">
+                                        <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-3" data-print-exclude>
                                             {['Person / Patient', 'Manager', 'Clinical Lead'].map((label) => (
                                                 <button
                                                     key={label}
@@ -2020,13 +2030,13 @@ export default function PatientCarePlanDetail({ patientSlug = 'sarah-jenkins', p
                                                 />
                                             </div>
                                         </div>
-                                        <div className="mt-6 flex flex-wrap items-center justify-end gap-3">
+                                        <div className="mt-6 flex flex-wrap items-center justify-end gap-3" data-print-exclude>
                                             <button type="button" className="rounded-xl border border-slate-200 px-5 py-2.5 text-sm font-semibold text-slate-700">
                                                 Cancel & Discard
                                             </button>
                                             <button
                                                 type="button"
-                                                onClick={() => window.print()}
+                                                onClick={handlePrintCarePlan}
                                                 className="rounded-xl border border-slate-200 bg-white px-5 py-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-50"
                                             >
                                                 Print

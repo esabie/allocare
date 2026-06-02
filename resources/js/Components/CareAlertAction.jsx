@@ -52,7 +52,7 @@ export function resolveCareAlertHref(alert) {
     }
 
     if (label.includes('MISSED VISIT')) {
-        return slug ? route('patients.handovers', slug) : route('schedules');
+        return route('schedules');
     }
 
     if (label.includes('HIGH RISK') || label.includes('ELEVATED RISK')) {

@@ -2392,6 +2392,14 @@ Route::get('/dashboard', function () {
     ]);
 })->middleware(['auth', 'verified'])->name('dashboard');
 
+Route::get('/csrf-token', function (Request $request) {
+    $request->session()->regenerateToken();
+
+    return response()->json([
+        'token' => csrf_token(),
+    ]);
+})->middleware('web')->name('csrf.token');
+
 Route::get('/analytics', function () {
     $now = now();
     $startOfWeek = $now->copy()->startOfWeek(Carbon::SUNDAY);
@@ -2790,9 +2798,7 @@ function build_active_care_alerts(bool $includeAllMedicationAlerts = false): \Il
             'panel' => 'bg-rose-50',
             'time' => $schedule->end_at,
             'patientUrlKey' => $patientSlug,
-            'href' => $patientSlug
-                ? route('patients.handovers', $patientSlug)
-                : route('schedules'),
+            'href' => route('schedules'),
         ]);
     }
 
@@ -3221,7 +3227,18 @@ Route::post('/schedules', function () {
     );
 
     return redirect()->route('schedules')->with('success', 'Visit scheduled successfully.');
-})->middleware(['auth', 'verified'])->name('schedules.store');
+})->middleware(['auth', 'verified', 'throttle:5,1'])->name('schedules.store');
+
+// Backward-compatibility safety net:
+// Some stale clients can still emit PATCH /schedules (without schedule id),
+// which previously caused noisy 405 errors. Swallow gracefully.
+Route::patch('/schedules', function () {
+    return response()->json([
+        'ok' => false,
+        'legacy' => true,
+        'message' => 'Legacy schedules PATCH ignored.',
+    ], 200);
+})->middleware(['auth', 'verified'])->name('schedules.patch-legacy');
 
 Route::patch('/schedules/{schedule}', function (PatientSchedule $schedule) {
     $payload = request()->validate([
@@ -6767,6 +6784,16 @@ Route::get('/reports/schedules', function () {
             'time' => $s->start_at->format('H:i').' - '.$s->end_at->format('H:i'),
             'duration' => $s->start_at->diffInMinutes($s->end_at),
             'status' => $displayStatus,
+            'hasEcmData' => $s->checked_in_at !== null
+                || $s->checked_out_at !== null
+                || $s->check_in_latitude !== null
+                || $s->check_in_longitude !== null
+                || $s->check_out_latitude !== null
+                || $s->check_out_longitude !== null
+                || $s->check_in_distance_metres !== null
+                || $s->check_out_distance_metres !== null
+                || $s->late_by_minutes !== null
+                || $s->left_early_by_minutes !== null,
             'lateByMinutes' => (int) ($s->late_by_minutes ?? 0),
             'leftEarlyByMinutes' => (int) ($s->left_early_by_minutes ?? 0),
         ];
@@ -6821,8 +6848,26 @@ Route::get('/reports/schedules/export/csv', function () {
             return;
         }
 
-        fputcsv($output, ['Date', 'Start', 'End', 'Patient', 'Carer', 'Duration (mins)', 'Status', 'Late (mins)', 'Left Early (mins)']);
+        fputcsv($output, ['Date', 'Start', 'End', 'Patient', 'Carer', 'Duration (mins)', 'Status', 'ECM', 'Late (mins)', 'Left Early (mins)']);
         foreach ($schedules as $s) {
+            $hasEcmData = $s->checked_in_at !== null
+                || $s->checked_out_at !== null
+                || $s->check_in_latitude !== null
+                || $s->check_in_longitude !== null
+                || $s->check_out_latitude !== null
+                || $s->check_out_longitude !== null
+                || $s->check_in_distance_metres !== null
+                || $s->check_out_distance_metres !== null
+                || $s->late_by_minutes !== null
+                || $s->left_early_by_minutes !== null;
+            $lateBy = (int) ($s->late_by_minutes ?? 0);
+            $leftEarlyBy = (int) ($s->left_early_by_minutes ?? 0);
+            $ecmLabel = !$hasEcmData
+                ? 'No ECM data'
+                : (($lateBy > 0 || $leftEarlyBy > 0)
+                    ? trim(($lateBy > 0 ? "Late {$lateBy}m " : '').($leftEarlyBy > 0 ? "Early {$leftEarlyBy}m" : ''))
+                    : 'On time');
+
             fputcsv($output, [
                 $s->start_at?->format('d M Y'),
                 $s->start_at?->format('H:i'),
@@ -6831,8 +6876,9 @@ Route::get('/reports/schedules/export/csv', function () {
                 $s->assignedUser?->name ?? '-',
                 $s->start_at && $s->end_at ? $s->start_at->diffInMinutes($s->end_at) : 0,
                 $s->status ?? 'in_progress',
-                $s->late_by_minutes ?? 0,
-                $s->left_early_by_minutes ?? 0,
+                $ecmLabel,
+                $lateBy,
+                $leftEarlyBy,
             ]);
         }
         fclose($output);

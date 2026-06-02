@@ -37,6 +37,25 @@ function formatTimeHm(date) {
     return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
 }
 
+function firstErrorMessage(error) {
+    if (!error) return '';
+    if (typeof error?.message === 'string' && error.message.trim() !== '') {
+        return error.message;
+    }
+    if (error?.errors && typeof error.errors === 'object') {
+        for (const key of Object.keys(error.errors)) {
+            const value = error.errors[key];
+            if (Array.isArray(value) && value.length > 0) {
+                return String(value[0]);
+            }
+            if (typeof value === 'string' && value.trim() !== '') {
+                return value;
+            }
+        }
+    }
+    return '';
+}
+
 function toIsoDate(date) {
     return date.toISOString().slice(0, 10);
 }
@@ -111,6 +130,7 @@ function getStatusMeta(entry) {
 export default function Schedules({ patients = [], staff = [], entries = [] }) {
     const flashSuccess = usePage().props?.flash?.success;
     const [queueMessage, setQueueMessage] = useState('');
+    const [submitErrorMessage, setSubmitErrorMessage] = useState('');
     const [savingBooking, setSavingBooking] = useState(false);
     const [showNewBooking, setShowNewBooking] = useState(false);
     const [showFilters, setShowFilters] = useState(false);
@@ -141,9 +161,13 @@ export default function Schedules({ patients = [], staff = [], entries = [] }) {
 
     const markCompleted = async () => {
         if (!selectedEntry) return;
+        if (!selectedEntry?.id) {
+            setSubmitErrorMessage('Unable to identify this visit. Please refresh and try again.');
+            return;
+        }
         setQueueMessage('');
         await routerPatchWithOffline(
-            route('schedules.complete', selectedEntry.id),
+            route('schedules.complete', { schedule: selectedEntry.id }),
             { notes: completionNotes || 'Shift completed', status: 'completed' },
             {
                 onSuccess: () => closeCompletionModal(),
@@ -157,9 +181,13 @@ export default function Schedules({ patients = [], staff = [], entries = [] }) {
 
     const markMissed = async () => {
         if (!selectedEntry) return;
+        if (!selectedEntry?.id) {
+            setSubmitErrorMessage('Unable to identify this visit. Please refresh and try again.');
+            return;
+        }
         setQueueMessage('');
         await routerPatchWithOffline(
-            route('schedules.complete', selectedEntry.id),
+            route('schedules.complete', { schedule: selectedEntry.id }),
             { notes: completionNotes || 'Shift missed — carer did not attend', status: 'missed' },
             {
                 onSuccess: () => closeCompletionModal(),
@@ -189,9 +217,13 @@ export default function Schedules({ patients = [], staff = [], entries = [] }) {
 
     const submitReschedule = async () => {
         if (!rescheduleEntry) return;
+        if (!rescheduleEntry?.id) {
+            setSubmitErrorMessage('Unable to identify this visit. Please refresh and try again.');
+            return;
+        }
         setQueueMessage('');
         await routerPatchWithOffline(
-            route('schedules.reschedule', rescheduleEntry.id),
+            route('schedules.reschedule', { schedule: rescheduleEntry.id }),
             {
                 patient_url_key: rescheduleEntry.patientUrlKey,
                 visit_date: rescheduleDate,
@@ -220,6 +252,7 @@ export default function Schedules({ patients = [], staff = [], entries = [] }) {
     const submit = async (event) => {
         event.preventDefault();
         setQueueMessage('');
+        setSubmitErrorMessage('');
         setSavingBooking(true);
         await routerPostWithOffline(route('schedules.store'), data, {
             onSuccess: () => {
@@ -231,12 +264,29 @@ export default function Schedules({ patients = [], staff = [], entries = [] }) {
                 setShowNewBooking(false);
                 setQueueMessage('Saved offline — new visit will sync when connection returns.');
             },
+            onError: (error, response) => {
+                const exactMessage = firstErrorMessage(error);
+                if (exactMessage) {
+                    setSubmitErrorMessage(exactMessage);
+                    return;
+                }
+                if (response?.status === 422) {
+                    setSubmitErrorMessage('Please check the schedule details and try again.');
+                    return;
+                }
+                setSubmitErrorMessage('Unable to save schedule right now. Please try again.');
+            },
         });
         setSavingBooking(false);
     };
 
     const rescheduleEntryToCell = async (targetPatientUrlKey, targetDateIso) => {
         if (!draggedEntry) return;
+        if (!draggedEntry?.id) {
+            setSubmitErrorMessage('Unable to identify this visit. Please refresh and try again.');
+            setDraggedEntry(null);
+            return;
+        }
 
         const previousStart = new Date(draggedEntry.startAt);
         const previousEnd = new Date(draggedEntry.endAt);
@@ -253,7 +303,7 @@ export default function Schedules({ patients = [], staff = [], entries = [] }) {
 
         setQueueMessage('');
         await routerPatchWithOffline(
-            route('schedules.reschedule', draggedEntry.id),
+            route('schedules.reschedule', { schedule: draggedEntry.id }),
             {
                 patient_url_key: targetPatientUrlKey,
                 visit_date: targetDateIso,
@@ -371,6 +421,11 @@ export default function Schedules({ patients = [], staff = [], entries = [] }) {
                         {(flashSuccess || queueMessage) && (
                             <div className="mb-4 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
                                 {queueMessage || flashSuccess}
+                            </div>
+                        )}
+                        {submitErrorMessage && (
+                            <div className="mb-4 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800">
+                                {submitErrorMessage}
                             </div>
                         )}
 

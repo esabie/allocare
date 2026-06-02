@@ -1,11 +1,40 @@
-const OFFLINE_QUEUE_KEY = 'allocare.offline.queue.v2';
+const OFFLINE_QUEUE_KEY = 'allocare.offline.queue.v3';
+const LEGACY_OFFLINE_QUEUE_KEYS = [
+    'allocare.offline.queue.v1',
+    'allocare.offline.queue.v2',
+];
+let csrfTokenOverride = null;
+
+function isLegacyInvalidJob(job) {
+    const method = String(job?.method || '').toUpperCase();
+    const rawUrl = String(job?.url || '');
+    if (!rawUrl) return false;
+
+    let path = rawUrl;
+    try {
+        const parsed = new URL(rawUrl, window.location.origin);
+        path = parsed.pathname || rawUrl;
+    } catch {
+        // ignore URL parse errors and fallback to raw string checks
+    }
+
+    // Legacy bad payloads were PATCH /schedules (missing schedule id).
+    return method === 'PATCH' && (path === '/schedules' || path.endsWith('/schedules'));
+}
 
 function readQueue() {
     try {
         const raw = window.localStorage.getItem(OFFLINE_QUEUE_KEY);
         if (!raw) return [];
         const parsed = JSON.parse(raw);
-        return Array.isArray(parsed) ? parsed : [];
+        if (!Array.isArray(parsed)) return [];
+
+        const filtered = parsed.filter((job) => !isLegacyInvalidJob(job));
+        if (filtered.length !== parsed.length) {
+            writeQueue(filtered);
+        }
+
+        return filtered;
     } catch {
         return [];
     }
@@ -15,9 +44,55 @@ function writeQueue(queue) {
     window.localStorage.setItem(OFFLINE_QUEUE_KEY, JSON.stringify(queue));
 }
 
+function clearLegacyQueues() {
+    for (const key of LEGACY_OFFLINE_QUEUE_KEYS) {
+        try {
+            window.localStorage.removeItem(key);
+        } catch {
+            // no-op
+        }
+    }
+}
+
 function csrfToken() {
+    if (csrfTokenOverride) {
+        return csrfTokenOverride;
+    }
     const meta = document.querySelector('meta[name="csrf-token"]');
     return meta?.getAttribute('content') || '';
+}
+
+async function refreshCsrfToken() {
+    try {
+        const response = await fetch('/csrf-token', {
+            method: 'GET',
+            credentials: 'same-origin',
+            headers: {
+                Accept: 'application/json, text/plain, */*',
+                'X-Requested-With': 'XMLHttpRequest',
+            },
+        });
+
+        if (!response.ok) {
+            return false;
+        }
+
+        const data = await response.json();
+        const nextToken = typeof data?.token === 'string' ? data.token : '';
+        if (!nextToken) {
+            return false;
+        }
+
+        csrfTokenOverride = nextToken;
+        const meta = document.querySelector('meta[name="csrf-token"]');
+        if (meta) {
+            meta.setAttribute('content', nextToken);
+        }
+
+        return true;
+    } catch {
+        return false;
+    }
 }
 
 function buildHeaders(contentType) {
@@ -51,6 +126,74 @@ async function sendJob(job) {
     }
 
     return fetch(job.url, options);
+}
+
+function shouldQueueResponse(response) {
+    if (!response) return true;
+    if (response.ok) return false;
+
+    // Client-side/request issues (validation, auth, not found, etc.) should not be queued.
+    // They need user action, not retry.
+    if (response.status >= 400 && response.status < 500 && response.status !== 408 && response.status !== 429) {
+        return false;
+    }
+
+    // Retryable/transient cases.
+    return response.status >= 500 || response.status === 408 || response.status === 429;
+}
+
+async function parseErrorPayload(response) {
+    if (!response) return null;
+
+    try {
+        const contentType = response.headers.get('content-type') || '';
+        if (contentType.includes('application/json')) {
+            return await response.json();
+        }
+
+        const text = await response.text();
+        return text ? { message: text } : null;
+    } catch {
+        return null;
+    }
+}
+
+function firstErrorMessage(error) {
+    if (!error) return '';
+    if (typeof error?.message === 'string' && error.message.trim() !== '') {
+        return error.message;
+    }
+    if (error?.errors && typeof error.errors === 'object') {
+        for (const key of Object.keys(error.errors)) {
+            const value = error.errors[key];
+            if (Array.isArray(value) && value.length > 0) {
+                return String(value[0]);
+            }
+            if (typeof value === 'string' && value.trim() !== '') {
+                return value;
+            }
+        }
+    }
+    return '';
+}
+
+function notifyRequestError(errorPayload, response) {
+    const message = firstErrorMessage(errorPayload)
+        || (response?.status === 422
+            ? 'Please check the form details and try again.'
+            : response?.status === 403
+                ? 'You do not have permission to perform this action.'
+                : response?.status === 401
+                    ? 'Your session expired. Please sign in and try again.'
+                    : 'Request failed. Please try again.');
+
+    window.dispatchEvent(new CustomEvent('allocare:request-error', {
+        detail: {
+            message,
+            status: response?.status ?? null,
+            error: errorPayload ?? null,
+        },
+    }));
 }
 
 function objectToFormData(obj) {
@@ -96,10 +239,12 @@ export function enqueueOfflinePost(url, payload) {
 }
 
 export function getOfflineQueueCount() {
+    clearLegacyQueues();
     return readQueue().length;
 }
 
 export async function flushOfflineQueue() {
+    clearLegacyQueues();
     if (!navigator.onLine) return { flushed: 0, remaining: readQueue().length };
 
     const queue = readQueue();
@@ -107,6 +252,7 @@ export async function flushOfflineQueue() {
 
     const remaining = [];
     let flushed = 0;
+    let dropped = 0;
 
     for (const job of queue) {
         try {
@@ -115,7 +261,14 @@ export async function flushOfflineQueue() {
                 flushed += 1;
                 continue;
             }
-            remaining.push(job);
+
+            if (shouldQueueResponse(response)) {
+                remaining.push(job);
+                continue;
+            }
+
+            // Drop non-retryable client/request errors (e.g. 422 validation).
+            dropped += 1;
         } catch {
             remaining.push(job);
         }
@@ -123,11 +276,13 @@ export async function flushOfflineQueue() {
 
     writeQueue(remaining);
 
-    if (flushed > 0) {
-        window.dispatchEvent(new CustomEvent('allocare:offline-synced', { detail: { flushed, remaining: remaining.length } }));
+    if (flushed > 0 || dropped > 0) {
+        window.dispatchEvent(new CustomEvent('allocare:offline-synced', {
+            detail: { flushed, remaining: remaining.length, dropped },
+        }));
     }
 
-    return { flushed, remaining: remaining.length };
+    return { flushed, remaining: remaining.length, dropped };
 }
 
 export async function requestWithOfflineQueue({
@@ -140,11 +295,6 @@ export async function requestWithOfflineQueue({
 }) {
     const { onSuccess, onQueued, onError } = handlers;
 
-    const runOnline = async () => {
-        const response = await sendJob({ url, method, payload, contentType, bodyType });
-        return response.ok;
-    };
-
     if (!navigator.onLine) {
         enqueueOfflineJob({ url, method, payload, contentType, bodyType });
         onQueued?.();
@@ -152,10 +302,30 @@ export async function requestWithOfflineQueue({
     }
 
     try {
-        if (await runOnline()) {
+        let response = await sendJob({ url, method, payload, contentType, bodyType });
+        if (response.status === 419) {
+            const refreshed = await refreshCsrfToken();
+            if (refreshed) {
+                response = await sendJob({ url, method, payload, contentType, bodyType });
+            }
+        }
+        if (response.ok) {
             onSuccess?.();
             return { queued: false, ok: true };
         }
+
+        const errorPayload = await parseErrorPayload(response);
+        if (shouldQueueResponse(response)) {
+            enqueueOfflineJob({ url, method, payload, contentType, bodyType });
+            onError?.(errorPayload, response);
+            return { queued: true, ok: false, status: response.status, error: errorPayload };
+        }
+
+        if (!onError) {
+            notifyRequestError(errorPayload, response);
+        }
+        onError?.(errorPayload, response);
+        return { queued: false, ok: false, status: response.status, error: errorPayload };
     } catch {
         // queue on failure
     }

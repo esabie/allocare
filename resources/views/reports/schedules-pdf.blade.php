@@ -39,21 +39,45 @@
     <table>
         <thead>
             <tr>
-                <th>Date</th><th>Time</th><th>Patient</th><th>Carer</th><th>Duration</th><th>Status</th>
+                <th>Date</th><th>Time</th><th>Patient</th><th>Carer</th><th>Duration</th><th>ECM</th><th>Status</th>
             </tr>
         </thead>
         <tbody>
             @forelse(($schedules ?? []) as $s)
+                @php
+                    $hasEcmData = $s->checked_in_at !== null
+                        || $s->checked_out_at !== null
+                        || $s->check_in_latitude !== null
+                        || $s->check_in_longitude !== null
+                        || $s->check_out_latitude !== null
+                        || $s->check_out_longitude !== null
+                        || $s->check_in_distance_metres !== null
+                        || $s->check_out_distance_metres !== null
+                        || $s->late_by_minutes !== null
+                        || $s->left_early_by_minutes !== null;
+                    $lateBy = (int) ($s->late_by_minutes ?? 0);
+                    $leftEarlyBy = (int) ($s->left_early_by_minutes ?? 0);
+                @endphp
                 <tr>
                     <td>{{ $s->start_at?->format('d M Y') ?? '-' }}</td>
                     <td>{{ ($s->start_at?->format('H:i') ?? '-') }} - {{ ($s->end_at?->format('H:i') ?? '-') }}</td>
                     <td>{{ $s->patient?->name ?? '-' }}</td>
                     <td>{{ $s->assignedUser?->name ?? '-' }}</td>
                     <td>{{ ($s->start_at && $s->end_at) ? $s->start_at->diffInMinutes($s->end_at).' mins' : '-' }}</td>
+                    <td>
+                        @if(!$hasEcmData)
+                            No ECM data
+                        @elseif($lateBy > 0 || $leftEarlyBy > 0)
+                            @if($lateBy > 0) Late: {{ $lateBy }}m @endif
+                            @if($leftEarlyBy > 0) @if($lateBy > 0)<br>@endif Early: {{ $leftEarlyBy }}m @endif
+                        @else
+                            On time
+                        @endif
+                    </td>
                     <td>{{ $s->status ?? 'in_progress' }}</td>
                 </tr>
             @empty
-                <tr><td colspan="6">No shifts in selected period.</td></tr>
+                <tr><td colspan="7">No shifts in selected period.</td></tr>
             @endforelse
         </tbody>
     </table>

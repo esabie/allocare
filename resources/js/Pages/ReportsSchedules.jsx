@@ -215,9 +215,10 @@ export default function ReportsSchedules({ stats = {}, byStaff = [], byPatient =
                                                     <td className="border border-slate-200 px-3 py-2">{shift.carer}</td>
                                                     <td className="border border-slate-200 px-3 py-2">{shift.duration >= 60 ? `${Math.floor(shift.duration / 60)}h ${shift.duration % 60}m` : `${shift.duration} mins`}</td>
                                                     <td className="border border-slate-200 px-3 py-2 text-xs">
-                                                        {shift.lateByMinutes > 0 && <div>Late: {shift.lateByMinutes}m</div>}
-                                                        {shift.leftEarlyByMinutes > 0 && <div>Early: {shift.leftEarlyByMinutes}m</div>}
-                                                        {shift.lateByMinutes === 0 && shift.leftEarlyByMinutes === 0 && <div className="text-slate-400">On time</div>}
+                                                        {!shift.hasEcmData && <div className="text-slate-400">No ECM data</div>}
+                                                        {shift.hasEcmData && shift.lateByMinutes > 0 && <div>Late: {shift.lateByMinutes}m</div>}
+                                                        {shift.hasEcmData && shift.leftEarlyByMinutes > 0 && <div>Early: {shift.leftEarlyByMinutes}m</div>}
+                                                        {shift.hasEcmData && shift.lateByMinutes === 0 && shift.leftEarlyByMinutes === 0 && <div className="text-slate-400">On time</div>}
                                                     </td>
                                                     <td className="border border-slate-200 px-3 py-2">
                                                         <span className={`inline-block rounded-full px-2.5 py-1 text-[10px] font-semibold ${statusBadge(shift.status)}`}>

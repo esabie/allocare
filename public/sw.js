@@ -1,4 +1,4 @@
-const CACHE_NAME = 'allocare-v1';
+const CACHE_NAME = 'allocare-v2';
 const OFFLINE_URL = '/offline.html';
 
 const PRECACHE_URLS = [
@@ -29,23 +29,24 @@ self.addEventListener('fetch', (event) => {
         return;
     }
 
-    event.respondWith(
-        caches.match(event.request).then((cached) => {
-            if (cached) {
-                return cached;
-            }
+    const isVersionedAsset = event.request.url.includes('/build/') || event.request.url.includes('fonts.');
 
-            return fetch(event.request).then((response) => {
-                if (
-                    response.status === 200 &&
-                    (event.request.url.includes('/build/') || event.request.url.includes('fonts.'))
-                ) {
-                    const clone = response.clone();
-                    caches.open(CACHE_NAME).then((cache) => cache.put(event.request, clone));
-                }
+    if (isVersionedAsset) {
+        // Network-first for app bundles so clients pick up latest fixes immediately.
+        event.respondWith(
+            fetch(event.request)
+                .then((response) => {
+                    if (response.status === 200) {
+                        const clone = response.clone();
+                        caches.open(CACHE_NAME).then((cache) => cache.put(event.request, clone));
+                    }
 
-                return response;
-            });
-        })
-    );
+                    return response;
+                })
+                .catch(() => caches.match(event.request))
+        );
+        return;
+    }
+
+    event.respondWith(fetch(event.request).catch(() => caches.match(event.request)));
 });
