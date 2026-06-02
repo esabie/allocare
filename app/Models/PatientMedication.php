@@ -52,4 +52,9 @@ class PatientMedication extends Model
     {
         return $this->hasMany(MedicationReminder::class, 'patient_medication_id');
     }
+
+    public function stock(): \Illuminate\Database\Eloquent\Relations\HasOne
+    {
+        return $this->hasOne(MedicationStock::class, 'patient_medication_id');
+    }
 }

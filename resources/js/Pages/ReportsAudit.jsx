@@ -32,12 +32,28 @@ const reportTypes = [
         tags: ['Compliance', 'Data Changes'],
     },
     {
+        id: 'gdpr',
+        title: 'GDPR & Privacy Requests',
+        description: 'Subject access requests, right to erasure workflow, and SAR data exports.',
+        status: 'ACTIVE',
+        tags: ['GDPR', 'SAR', 'Erasure', 'Breach register'],
+        href: 'reports.gdpr',
+    },
+    {
         id: 'schedules',
         title: 'Schedule & Shifts',
         description: 'Total shifts, hours allocated, staff breakdown, and completion status.',
         status: 'ACTIVE',
         tags: ['Shifts', 'Hours'],
         href: 'reports.schedules',
+    },
+    {
+        id: 'ecm_commissioner',
+        title: 'ECM Commissioner Export',
+        description: 'Attendance evidence only: check-in/out timestamps, GPS distance, and timing variance.',
+        status: 'ACTIVE',
+        tags: ['ECM', 'Attendance Evidence'],
+        href: 'reports.ecm-commissioner',
     },
     {
         id: 'incidents',
@@ -51,8 +67,9 @@ const reportTypes = [
         id: 'staff',
         title: 'Staff Performance',
         description: 'Attendance, shift completion rates, and carer allocation overview.',
-        status: 'DRAFT',
-        tags: ['Coming Soon'],
+        status: 'ACTIVE',
+        tags: ['Shifts', 'Performance'],
+        href: 'reports.staff-performance',
     },
     {
         id: 'compliance',
@@ -74,8 +91,9 @@ const reportTypes = [
         id: 'clinical',
         title: 'Clinical Outcomes',
         description: 'Patient observations, vital trends, and health outcome metrics.',
-        status: 'DRAFT',
-        tags: ['Coming Soon'],
+        status: 'ACTIVE',
+        tags: ['Observations', 'Outcomes'],
+        href: 'reports.clinical-outcomes',
     },
 ];
 

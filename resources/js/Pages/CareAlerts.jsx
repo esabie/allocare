@@ -2,6 +2,7 @@ import { Head, Link } from '@inertiajs/react';
 import DashboardSidebar from '@/Components/DashboardSidebar';
 import AppHeaderNav from '@/Components/AppHeaderNav';
 import ProfileMenu from '@/Components/ProfileMenu';
+import CareAlertAction from '@/Components/CareAlertAction';
 
 export default function CareAlerts({ alerts = [] }) {
     return (
@@ -43,15 +44,7 @@ export default function CareAlerts({ alerts = [] }) {
                                         <p className="mb-2 text-[11px] font-semibold tracking-wide text-slate-500">{alert.label}</p>
                                         <p className="font-semibold text-slate-800">{alert.patient}</p>
                                         <p className="mb-3 text-sm text-slate-600">{alert.details}</p>
-                                        {alert.href ? (
-                                            <Link href={alert.href} className="inline-block rounded-lg bg-slate-900 px-3 py-1.5 text-xs font-semibold text-white">
-                                                {alert.action}
-                                            </Link>
-                                        ) : (
-                                            <button type="button" className="rounded-lg bg-slate-900 px-3 py-1.5 text-xs font-semibold text-white">
-                                                {alert.action}
-                                            </button>
-                                        )}
+                                        <CareAlertAction alert={alert} />
                                     </div>
                                 ))}
                             </div>

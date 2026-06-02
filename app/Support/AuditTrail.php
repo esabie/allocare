@@ -27,6 +27,11 @@ class AuditTrail
         return $user->hasAnyRole(self::REPORT_VIEW_ROLES);
     }
 
+    public static function canManagePrivacyRequests(?User $user): bool
+    {
+        return self::canViewReports($user);
+    }
+
     public static function canViewActivityLog(?User $user): bool
     {
         if ($user === null) {

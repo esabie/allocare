@@ -1,5 +1,6 @@
 import { Head, Link, useForm } from '@inertiajs/react';
 import { useCallback, useRef, useState } from 'react';
+import { postFormWithOfflineQueue } from '@/utils/offlineQueue';
 import DashboardSidebar from '@/Components/DashboardSidebar';
 import AppHeaderNav from '@/Components/AppHeaderNav';
 import ProfileMenu from '@/Components/ProfileMenu';
@@ -21,7 +22,9 @@ export default function PatientsCreate() {
     const [photoPreview, setPhotoPreview] = useState('');
     const [photoFile, setPhotoFile] = useState(null);
     const [photoError, setPhotoError] = useState('');
-    const { data, setData, transform, post, processing, errors } = useForm({
+    const [queueMessage, setQueueMessage] = useState('');
+    const [submitting, setSubmitting] = useState(false);
+    const { data, setData, errors } = useForm({
         title: 'Mr.',
         first_name: '',
         last_name: '',
@@ -42,6 +45,22 @@ export default function PatientsCreate() {
         next_of_kin_email: '',
         other_relevant_people: '',
         social_services_number: '',
+        preferred_name: '',
+        gp_name: '',
+        gp_practice: '',
+        gp_phone: '',
+        primary_language: 'English',
+        interpreter_required: false,
+        capacity_status: '',
+        best_interest_decision: '',
+        information_sharing_consent: '',
+        dols_lps_status: '',
+        dnacpr_status: '',
+        mobility_aids: '',
+        hoist_type: '',
+        sling_size: '',
+        equipment_notes: '',
+        environmental_notes: '',
         weight_kg: '',
         height_m: '',
         start_date: '',
@@ -62,36 +81,52 @@ export default function PatientsCreate() {
         red: 'RED',
     };
 
-    const submit = (event) => {
+    const submit = async (event) => {
         event.preventDefault();
+        setQueueMessage('');
+        setSubmitting(true);
 
         const fullName = `${data.first_name} ${data.last_name}`.trim();
         const mergedAddress = [data.address_line_1, data.city, data.postcode].filter(Boolean).join(', ');
 
-        transform((form) => {
-            const payload = {
-                ...form,
-                nhs_number: String(form.nhs_number || '').replace(/\D/g, ''),
-                name: fullName,
-                dob: form.date_of_birth,
-                allergies: form.severe_allergies?.trim() || null,
-                primary_diagnosis: form.primary_diagnosis?.trim() || null,
-                severe_allergies: form.severe_allergies?.trim() || null,
-                address: mergedAddress,
-                latitude: form.latitude || null,
-                longitude: form.longitude || null,
-                phone: form.phone_number,
-                status: ragToStatus[form.rag_status] || 'ACTIVE',
-            };
+        const payload = {
+            ...data,
+            nhs_number: String(data.nhs_number || '').replace(/\D/g, ''),
+            name: fullName,
+            dob: data.date_of_birth,
+            allergies: data.severe_allergies?.trim() || null,
+            primary_diagnosis: data.primary_diagnosis?.trim() || null,
+            severe_allergies: data.severe_allergies?.trim() || null,
+            address: mergedAddress,
+            latitude: data.latitude || null,
+            longitude: data.longitude || null,
+            phone: data.phone_number,
+            status: ragToStatus[data.rag_status] || 'GREEN',
+            interpreter_required: Boolean(data.interpreter_required),
+        };
 
-            if (photoFile) {
-                payload.photo = photoFile;
-            }
-
-            return payload;
+        const result = await postFormWithOfflineQueue(route('patients.store'), payload, {
+            file: photoFile,
+            fileField: 'photo',
+            handlers: {
+                onSuccess: () => {
+                    window.location.href = route('patients');
+                },
+                onQueued: () => {
+                    setQueueMessage('Registration saved offline — will sync when connection returns.');
+                },
+            },
         });
 
-        post(route('patients.store'), { forceFormData: Boolean(photoFile) });
+        setSubmitting(false);
+
+        if (result?.queued) {
+            return;
+        }
+
+        if (!result?.ok) {
+            setQueueMessage('Unable to register patient. Check required fields and try again.');
+        }
     };
 
     const handleNhsNumberChange = (value) => {
@@ -241,6 +276,11 @@ export default function PatientsCreate() {
                             </header>
 
                             <form id="patient-register-form" onSubmit={submit} className="space-y-4">
+                                {queueMessage && (
+                                    <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-medium text-emerald-800">
+                                        {queueMessage}
+                                    </div>
+                                )}
                                 {formErrorMessages.length > 0 && (
                                     <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800">
                                         <p className="font-semibold">Please fix the following before submitting:</p>
@@ -356,6 +396,62 @@ export default function PatientsCreate() {
                                                 <option value="Shared">Shared</option>
                                             </select>
                                             {errors.staffing_ratio && <p className="mt-1 text-xs text-rose-600">{errors.staffing_ratio}</p>}
+                                        </div>
+                                    </div>
+                                </div>
+                            </article>
+
+                            <article className="rounded-2xl border border-slate-200 bg-white p-5">
+                                <h2 className="text-2xl font-semibold text-slate-900">GP & Legal Profile</h2>
+                                <p className="text-sm text-slate-500">Optional clinical and legal details for the overview dashboard</p>
+                                <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-2">
+                                    <div>
+                                        <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">Preferred name</label>
+                                        <input value={data.preferred_name} onChange={(e) => setData('preferred_name', e.target.value)} className="mt-1 w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm" />
+                                    </div>
+                                    <div>
+                                        <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">Primary language</label>
+                                        <input value={data.primary_language} onChange={(e) => setData('primary_language', e.target.value)} className="mt-1 w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm" />
+                                    </div>
+                                    <div>
+                                        <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">GP name</label>
+                                        <input value={data.gp_name} onChange={(e) => setData('gp_name', e.target.value)} className="mt-1 w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm" />
+                                    </div>
+                                    <div>
+                                        <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">GP practice</label>
+                                        <input value={data.gp_practice} onChange={(e) => setData('gp_practice', e.target.value)} className="mt-1 w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm" />
+                                    </div>
+                                    <div>
+                                        <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">GP phone</label>
+                                        <input value={data.gp_phone} onChange={(e) => setData('gp_phone', e.target.value)} className="mt-1 w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm" />
+                                    </div>
+                                    <div className="flex items-end pb-2">
+                                        <label className="flex items-center gap-2 text-sm text-slate-700">
+                                            <input type="checkbox" checked={data.interpreter_required} onChange={(e) => setData('interpreter_required', e.target.checked)} className="rounded border-slate-300" />
+                                            Interpreter required
+                                        </label>
+                                    </div>
+                                    <div>
+                                        <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">Capacity status</label>
+                                        <input value={data.capacity_status} onChange={(e) => setData('capacity_status', e.target.value)} className="mt-1 w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm" placeholder="e.g. Has capacity" />
+                                    </div>
+                                    <div>
+                                        <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">DoLS / LPS</label>
+                                        <input value={data.dols_lps_status} onChange={(e) => setData('dols_lps_status', e.target.value)} className="mt-1 w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm" />
+                                    </div>
+                                    <div className="md:col-span-2">
+                                        <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">DNACPR status</label>
+                                        <input value={data.dnacpr_status} onChange={(e) => setData('dnacpr_status', e.target.value)} className="mt-1 w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm" />
+                                    </div>
+                                    <div>
+                                        <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">Mobility aids</label>
+                                        <input value={data.mobility_aids} onChange={(e) => setData('mobility_aids', e.target.value)} className="mt-1 w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm" />
+                                    </div>
+                                    <div>
+                                        <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">Hoist / sling</label>
+                                        <div className="mt-1 grid grid-cols-2 gap-2">
+                                            <input value={data.hoist_type} onChange={(e) => setData('hoist_type', e.target.value)} placeholder="Hoist type" className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm" />
+                                            <input value={data.sling_size} onChange={(e) => setData('sling_size', e.target.value)} placeholder="Sling size" className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm" />
                                         </div>
                                     </div>
                                 </div>
@@ -524,8 +620,8 @@ export default function PatientsCreate() {
                                     <Link href={route('patients')} className="rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-600">
                                         Discard
                                     </Link>
-                                    <button type="submit" disabled={processing} className="rounded-lg bg-slate-900 px-5 py-2 text-sm font-semibold text-white disabled:opacity-60">
-                                        {processing ? 'Saving...' : 'Complete Registration'}
+                                    <button type="submit" disabled={submitting} className="rounded-lg bg-slate-900 px-5 py-2 text-sm font-semibold text-white disabled:opacity-60">
+                                        {submitting ? 'Saving...' : 'Complete Registration'}
                                     </button>
                                 </footer>
                             </form>

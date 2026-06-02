@@ -7,9 +7,24 @@ use App\Models\PatientCarePlanSummary;
 use App\Models\Patient;
 use App\Models\PatientMedication;
 use App\Models\PatientSchedule;
+use App\Models\ScheduleVisitTask;
+use App\Models\PatientHandover;
+use App\Models\PatientWoundAssessment;
+use App\Models\PrivacyRequest;
+use App\Models\PatientFluidRecord;
+use App\Models\PatientBowelRecord;
 use App\Models\PatientVital;
 use App\Models\MedicationAdministration;
 use App\Models\MedicationReminder;
+use App\Models\MedicationStock;
+use App\Models\MedicationStockMovement;
+use App\Models\DataRetentionSchedule;
+use App\Models\PrivacyErasureJob;
+use App\Models\PrivacyNotice;
+use App\Models\PatientRiskAssessment;
+use App\Models\PatientRiskAssessmentVersion;
+use App\Models\IncidentInvestigation;
+use App\Models\PatientIncident;
 use App\Models\FormSnapshot;
 use App\Models\AuditEvent;
 use App\Models\CareJournalEntry;
@@ -139,6 +154,1610 @@ function resolve_schedule_window(string $visitDate, string $startTime, string $e
         'end_at' => $endAt,
         'spans_overnight' => ! $endAt->isSameDay($startAt),
     ];
+}
+
+function resolve_patient_schedule_for_ecm(Patient $patient, ?int $scheduleId = null): ?PatientSchedule
+{
+    if ($scheduleId !== null) {
+        return PatientSchedule::query()
+            ->where('id', $scheduleId)
+            ->where('patient_id', $patient->id)
+            ->first();
+    }
+
+    return PatientSchedule::query()
+        ->where('patient_id', $patient->id)
+        ->where('end_at', '>=', now()->subDay())
+        ->get()
+        ->sortBy(fn (PatientSchedule $schedule) => abs($schedule->start_at?->diffInSeconds(now()) ?? PHP_INT_MAX))
+        ->first();
+}
+
+function ecm_distance_metres(?float $fromLat, ?float $fromLng, ?float $toLat, ?float $toLng): ?int
+{
+    if ($fromLat === null || $fromLng === null || $toLat === null || $toLng === null) {
+        return null;
+    }
+
+    $earth = 6371000;
+    $toRad = fn (float $v): float => deg2rad($v);
+    $dLat = $toRad($toLat - $fromLat);
+    $dLng = $toRad($toLng - $fromLng);
+    $a = sin($dLat / 2) ** 2 + cos($toRad($fromLat)) * cos($toRad($toLat)) * sin($dLng / 2) ** 2;
+    $c = 2 * atan2(sqrt($a), sqrt(1 - $a));
+
+    return (int) round($earth * $c);
+}
+
+function visit_task_catalogue(): array
+{
+    return [
+        ['key' => 'personal_care', 'label' => 'Personal care'],
+        ['key' => 'hoist_transfers', 'label' => 'Hoist transfers'],
+        ['key' => 'medication_administration', 'label' => 'Medication administration'],
+        ['key' => 'nutrition_hydration', 'label' => 'Nutrition & hydration'],
+        ['key' => 'repositioning', 'label' => 'Repositioning'],
+        ['key' => 'catheter_care', 'label' => 'Catheter care'],
+        ['key' => 'peg_care', 'label' => 'PEG care'],
+        ['key' => 'observations', 'label' => 'Observations'],
+        ['key' => 'social_engagement', 'label' => 'Social engagement'],
+        ['key' => 'wound_care', 'label' => 'Wound care'],
+        ['key' => 'sleep_checks', 'label' => 'Sleep checks'],
+    ];
+}
+
+function seed_schedule_visit_tasks(PatientSchedule $schedule): void
+{
+    foreach (visit_task_catalogue() as $index => $task) {
+        ScheduleVisitTask::query()->firstOrCreate(
+            [
+                'patient_schedule_id' => $schedule->id,
+                'task_key' => $task['key'],
+            ],
+            [
+                'task_label' => $task['label'],
+                'sort_order' => $index,
+            ]
+        );
+    }
+}
+
+function map_schedule_visit_task(ScheduleVisitTask $task): array
+{
+    return [
+        'id' => $task->id,
+        'taskKey' => $task->task_key,
+        'taskLabel' => $task->task_label,
+        'outcome' => $task->outcome,
+        'notes' => $task->notes,
+        'completedAt' => $task->completed_at?->toIso8601String(),
+        'completedBy' => $task->completedBy
+            ? ['id' => $task->completedBy->id, 'name' => format_care_journal_author_name($task->completedBy)]
+            : null,
+    ];
+}
+
+function load_schedule_visit_tasks(PatientSchedule $schedule): array
+{
+    seed_schedule_visit_tasks($schedule);
+
+    return $schedule->visitTasks()
+        ->with('completedBy:id,name,first_name,surname')
+        ->orderBy('sort_order')
+        ->get()
+        ->map(fn (ScheduleVisitTask $task) => map_schedule_visit_task($task))
+        ->values()
+        ->all();
+}
+
+function build_patient_observation_chart_series(Patient $patient, int $days = 30): array
+{
+    $from = now()->subDays($days)->startOfDay();
+    $vitals = PatientVital::query()
+        ->where('patient_id', $patient->id)
+        ->where('recorded_at', '>=', $from)
+        ->orderBy('recorded_at')
+        ->orderBy('id')
+        ->get();
+
+    $makeSeries = function (string $field) use ($vitals): array {
+        return $vitals
+            ->filter(fn (PatientVital $vital) => $vital->{$field} !== null)
+            ->map(function (PatientVital $vital) use ($field) {
+                $value = $vital->{$field};
+                if (in_array($field, ['temperature_celsius', 'blood_glucose_mmol', 'weight_kg'], true)) {
+                    $value = (float) $value;
+                } else {
+                    $value = (int) $value;
+                }
+
+                return [
+                    'at' => $vital->recorded_at?->toIso8601String(),
+                    'label' => $vital->recorded_at?->format('d M H:i') ?? '',
+                    'value' => $value,
+                ];
+            })
+            ->values()
+            ->all();
+    };
+
+    return [
+        'from' => $from->toDateString(),
+        'to' => now()->toDateString(),
+        'series' => [
+            'heart_rate' => $makeSeries('heart_rate'),
+            'bp_systolic' => $makeSeries('bp_systolic'),
+            'spo2' => $makeSeries('spo2'),
+            'temperature_celsius' => $makeSeries('temperature_celsius'),
+            'blood_glucose_mmol' => $makeSeries('blood_glucose_mmol'),
+            'pain_score' => $makeSeries('pain_score'),
+        ],
+        'thresholds' => [
+            'heart_rate' => ['low' => 50, 'high' => 100],
+            'bp_systolic' => ['low' => 90, 'high' => 180],
+            'spo2' => ['low' => 94, 'critical' => 90],
+            'temperature' => ['low' => 35.0, 'high' => 38.0],
+            'glucose' => ['low' => 4.0, 'high' => 11.0],
+            'pain' => ['high' => 7],
+        ],
+    ];
+}
+
+function map_patient_handover(PatientHandover $handover): array
+{
+    $author = $handover->author;
+    $authorName = $author
+        ? trim((string) ($author->name ?: (($author->first_name ?? '').' '.($author->surname ?? ''))))
+        : '';
+
+    return [
+        'id' => $handover->id,
+        'shiftType' => $handover->shift_type,
+        'shiftDate' => $handover->shift_date?->toDateString(),
+        'shiftDateLabel' => $handover->shift_date?->format('d M Y'),
+        'recordedAt' => $handover->recorded_at?->toIso8601String(),
+        'recordedAtLabel' => $handover->recorded_at?->format('d M Y, H:i'),
+        'scheduleId' => $handover->patient_schedule_id,
+        'day' => [
+            'presentation' => $handover->presentation,
+            'careDelivered' => $handover->care_delivered,
+            'medicationSummary' => $handover->medication_summary,
+            'risksChanges' => $handover->risks_changes,
+            'handoverNotes' => $handover->handover_notes,
+        ],
+        'night' => [
+            'sleepSummary' => $handover->sleep_summary,
+            'disturbances' => $handover->disturbances,
+            'nightMedications' => $handover->night_medications,
+            'seizureRespiratoryEvents' => $handover->seizure_respiratory_events,
+            'morningPriorities' => $handover->morning_priorities,
+        ],
+        'author' => [
+            'id' => $author?->id,
+            'name' => $authorName !== '' ? $authorName : 'Unknown staff',
+        ],
+    ];
+}
+
+function validate_patient_handover_payload(array $payload): array
+{
+    $validated = validator($payload, [
+        'shift_type' => ['required', 'string', 'in:day,night'],
+        'shift_date' => ['required', 'date'],
+        'schedule_id' => ['nullable', 'integer'],
+        'presentation' => ['nullable', 'string', 'max:5000'],
+        'care_delivered' => ['nullable', 'string', 'max:5000'],
+        'medication_summary' => ['nullable', 'string', 'max:5000'],
+        'risks_changes' => ['nullable', 'string', 'max:5000'],
+        'handover_notes' => ['nullable', 'string', 'max:5000'],
+        'sleep_summary' => ['nullable', 'string', 'max:5000'],
+        'disturbances' => ['nullable', 'string', 'max:5000'],
+        'night_medications' => ['nullable', 'string', 'max:5000'],
+        'seizure_respiratory_events' => ['nullable', 'string', 'max:5000'],
+        'morning_priorities' => ['nullable', 'string', 'max:5000'],
+    ])->validate();
+
+    $trim = fn (?string $value): ?string => ($value = trim((string) $value)) !== '' ? $value : null;
+
+    $validated['presentation'] = $trim($validated['presentation'] ?? null);
+    $validated['care_delivered'] = $trim($validated['care_delivered'] ?? null);
+    $validated['medication_summary'] = $trim($validated['medication_summary'] ?? null);
+    $validated['risks_changes'] = $trim($validated['risks_changes'] ?? null);
+    $validated['handover_notes'] = $trim($validated['handover_notes'] ?? null);
+    $validated['sleep_summary'] = $trim($validated['sleep_summary'] ?? null);
+    $validated['disturbances'] = $trim($validated['disturbances'] ?? null);
+    $validated['night_medications'] = $trim($validated['night_medications'] ?? null);
+    $validated['seizure_respiratory_events'] = $trim($validated['seizure_respiratory_events'] ?? null);
+    $validated['morning_priorities'] = $trim($validated['morning_priorities'] ?? null);
+
+    if ($validated['shift_type'] === 'day') {
+        $hasContent = collect([
+            $validated['presentation'],
+            $validated['care_delivered'],
+            $validated['medication_summary'],
+            $validated['risks_changes'],
+            $validated['handover_notes'],
+        ])->filter()->isNotEmpty();
+
+        if (!$hasContent) {
+            throw ValidationException::withMessages([
+                'presentation' => 'Enter at least one day handover field.',
+            ]);
+        }
+    } else {
+        $hasContent = collect([
+            $validated['sleep_summary'],
+            $validated['disturbances'],
+            $validated['night_medications'],
+            $validated['seizure_respiratory_events'],
+            $validated['morning_priorities'],
+        ])->filter()->isNotEmpty();
+
+        if (!$hasContent) {
+            throw ValidationException::withMessages([
+                'sleep_summary' => 'Enter at least one night handover field.',
+            ]);
+        }
+    }
+
+    return $validated;
+}
+
+function evaluate_wound_assessment_alerts(PatientWoundAssessment $assessment): array
+{
+    $alerts = [];
+
+    if ($assessment->escalation_required) {
+        $alerts[] = 'Wound escalation flagged — review required';
+    }
+
+    if (trim((string) $assessment->infection_signs) !== '') {
+        $alerts[] = 'Infection signs recorded: '.Str::limit(trim((string) $assessment->infection_signs), 80);
+    }
+
+    if ($assessment->pain_score !== null && $assessment->pain_score >= 7) {
+        $alerts[] = 'High wound pain score: '.$assessment->pain_score.'/10';
+    }
+
+    if (in_array($assessment->pressure_ulcer_grade, ['category_3', 'category_4', 'unstageable'], true)) {
+        $alerts[] = 'High-grade pressure injury: '.str_replace('_', ' ', (string) $assessment->pressure_ulcer_grade);
+    }
+
+    return $alerts;
+}
+
+function map_patient_wound_assessment(PatientWoundAssessment $assessment): array
+{
+    $recorder = $assessment->recordedBy;
+    $authorName = $recorder
+        ? trim((string) ($recorder->name ?: (($recorder->first_name ?? '').' '.($recorder->surname ?? ''))))
+        : '';
+
+    $area = null;
+    if ($assessment->length_cm !== null && $assessment->width_cm !== null) {
+        $area = round((float) $assessment->length_cm * (float) $assessment->width_cm, 1);
+    }
+
+    return [
+        'id' => $assessment->id,
+        'woundSite' => $assessment->wound_site,
+        'woundType' => $assessment->wound_type,
+        'pressureUlcerGrade' => $assessment->pressure_ulcer_grade,
+        'pressureUlcerGradeLabel' => $assessment->pressure_ulcer_grade
+            ? Str::of($assessment->pressure_ulcer_grade)->replace('_', ' ')->title()->toString()
+            : null,
+        'lengthCm' => $assessment->length_cm,
+        'widthCm' => $assessment->width_cm,
+        'depthCm' => $assessment->depth_cm,
+        'areaCm2' => $area,
+        'exudate' => $assessment->exudate,
+        'periwoundCondition' => $assessment->periwound_condition,
+        'painScore' => $assessment->pain_score,
+        'dressingType' => $assessment->dressing_type,
+        'pressureRegime' => $assessment->pressure_regime,
+        'infectionSigns' => $assessment->infection_signs,
+        'escalationRequired' => $assessment->escalation_required,
+        'bodyMapNotes' => $assessment->body_map_notes,
+        'bodyMapRegion' => $assessment->body_map_region,
+        'bodyMapRegionLabel' => $assessment->body_map_region
+            ? Str::of($assessment->body_map_region)->replace('_', ' ')->title()->toString()
+            : null,
+        'photoUrl' => $assessment->photo_path
+            ? Storage::disk('public')->url($assessment->photo_path)
+            : null,
+        'reviewDueAt' => $assessment->review_due_at?->toDateString(),
+        'reviewDueAtLabel' => $assessment->review_due_at?->format('d M Y'),
+        'reviewOverdue' => $assessment->review_due_at
+            && $assessment->review_due_at->isPast(),
+        'planActions' => $assessment->plan_actions,
+        'thresholdAlerts' => evaluate_wound_assessment_alerts($assessment),
+        'recordedAt' => $assessment->recorded_at?->toIso8601String(),
+        'recordedAtLabel' => $assessment->recorded_at?->format('d M Y, H:i'),
+        'recordedBy' => [
+            'id' => $recorder?->id,
+            'name' => $authorName !== '' ? $authorName : 'Unknown staff',
+        ],
+    ];
+}
+
+function build_patient_wound_measurement_chart_series(Patient $patient, int $days = 30): array
+{
+    $from = now()->subDays($days)->startOfDay();
+    $assessments = PatientWoundAssessment::query()
+        ->where('patient_id', $patient->id)
+        ->where('recorded_at', '>=', $from)
+        ->orderBy('recorded_at')
+        ->orderBy('id')
+        ->get();
+
+    $makeSeries = function (string $field) use ($assessments): array {
+        return $assessments
+            ->filter(fn (PatientWoundAssessment $row) => $row->{$field} !== null)
+            ->map(fn (PatientWoundAssessment $row) => [
+                'at' => $row->recorded_at?->toIso8601String(),
+                'label' => $row->recorded_at?->format('d M H:i') ?? '',
+                'value' => (float) $row->{$field},
+            ])
+            ->values()
+            ->all();
+    };
+
+    return [
+        'from' => $from->toDateString(),
+        'to' => now()->toDateString(),
+        'series' => [
+            'length_cm' => $makeSeries('length_cm'),
+            'width_cm' => $makeSeries('width_cm'),
+            'area_cm2' => $assessments
+                ->filter(fn (PatientWoundAssessment $row) => $row->length_cm !== null && $row->width_cm !== null)
+                ->map(fn (PatientWoundAssessment $row) => [
+                    'at' => $row->recorded_at?->toIso8601String(),
+                    'label' => $row->recorded_at?->format('d M H:i') ?? '',
+                    'value' => round((float) $row->length_cm * (float) $row->width_cm, 1),
+                ])
+                ->values()
+                ->all(),
+        ],
+    ];
+}
+
+function append_wound_escalation_care_alerts($careAlerts, int $limit = 3): void
+{
+    if (!Schema::hasTable('patient_wound_assessments')) {
+        return;
+    }
+
+    $added = 0;
+    $recent = PatientWoundAssessment::query()
+        ->where('recorded_at', '>=', now()->subDays(7))
+        ->with('patient:id,name,url_key')
+        ->orderByDesc('recorded_at')
+        ->limit(20)
+        ->get();
+
+    foreach ($recent as $assessment) {
+        $alerts = evaluate_wound_assessment_alerts($assessment);
+        if (empty($alerts)) {
+            continue;
+        }
+
+        $patientSlug = $assessment->patient?->url_key;
+        $isCritical = $assessment->escalation_required
+            || in_array($assessment->pressure_ulcer_grade, ['category_3', 'category_4', 'unstageable'], true);
+
+        $careAlerts->push([
+            'label' => 'WOUND ALERT',
+            'patient' => $assessment->patient?->name ?? 'Unknown',
+            'details' => implode('; ', array_slice($alerts, 0, 2)),
+            'action' => 'Review',
+            'accent' => $isCritical ? 'border-red-400' : 'border-amber-400',
+            'panel' => $isCritical ? 'bg-red-50' : 'bg-amber-50',
+            'time' => $assessment->recorded_at,
+            'patientUrlKey' => $patientSlug,
+            'href' => $patientSlug ? route('patients.wound-care', $patientSlug) : null,
+        ]);
+
+        $added++;
+        if ($added >= $limit) {
+            break;
+        }
+    }
+}
+
+function map_patient_fluid_record(PatientFluidRecord $record): array
+{
+    $recorder = $record->recordedBy;
+    $authorName = $recorder
+        ? trim((string) ($recorder->name ?: (($recorder->first_name ?? '').' '.($recorder->surname ?? ''))))
+        : '';
+
+    return [
+        'id' => $record->id,
+        'fluidIntakeMl' => $record->fluid_intake_ml,
+        'fluidOutputMl' => $record->fluid_output_ml,
+        'fluidType' => $record->fluid_type,
+        'notes' => $record->notes,
+        'recordedAt' => $record->recorded_at?->toIso8601String(),
+        'recordedAtLabel' => $record->recorded_at?->format('d M Y, H:i'),
+        'recordedBy' => [
+            'id' => $recorder?->id,
+            'name' => $authorName !== '' ? $authorName : 'Unknown staff',
+        ],
+    ];
+}
+
+function map_patient_bowel_record(PatientBowelRecord $record): array
+{
+    $recorder = $record->recordedBy;
+    $authorName = $recorder
+        ? trim((string) ($recorder->name ?: (($recorder->first_name ?? '').' '.($recorder->surname ?? ''))))
+        : '';
+
+    return [
+        'id' => $record->id,
+        'bowelOpened' => $record->bowel_opened,
+        'bristolType' => $record->bristol_type,
+        'bristolLabel' => $record->bristol_type
+            ? (PatientBowelRecord::BRISTOL_LABELS[$record->bristol_type] ?? 'Type '.$record->bristol_type)
+            : null,
+        'continenceStatus' => $record->continence_status,
+        'notes' => $record->notes,
+        'recordedAt' => $record->recorded_at?->toIso8601String(),
+        'recordedAtLabel' => $record->recorded_at?->format('d M Y, H:i'),
+        'recordedBy' => [
+            'id' => $recorder?->id,
+            'name' => $authorName !== '' ? $authorName : 'Unknown staff',
+        ],
+    ];
+}
+
+function build_patient_fluid_balance_summary(Patient $patient, int $days = 7): array
+{
+    $from = now()->subDays($days - 1)->startOfDay();
+    $records = PatientFluidRecord::query()
+        ->where('patient_id', $patient->id)
+        ->where('recorded_at', '>=', $from)
+        ->orderBy('recorded_at')
+        ->get();
+
+    $byDay = [];
+    foreach ($records as $record) {
+        $key = $record->recorded_at->toDateString();
+        if (!isset($byDay[$key])) {
+            $byDay[$key] = ['date' => $key, 'intakeMl' => 0, 'outputMl' => 0];
+        }
+        $byDay[$key]['intakeMl'] += (int) ($record->fluid_intake_ml ?? 0);
+        $byDay[$key]['outputMl'] += (int) ($record->fluid_output_ml ?? 0);
+    }
+
+    return array_values($byDay);
+}
+
+function evaluate_fluid_balance_alerts(Patient $patient): array
+{
+    $alerts = [];
+    $todayIntake = (int) PatientFluidRecord::query()
+        ->where('patient_id', $patient->id)
+        ->whereDate('recorded_at', now()->toDateString())
+        ->sum('fluid_intake_ml');
+
+    if ($todayIntake > 0 && $todayIntake < 800 && now()->hour >= 14) {
+        $alerts[] = 'Low fluid intake today: '.$todayIntake.' ml recorded (review hydration plan).';
+    }
+
+    return $alerts;
+}
+
+function privacy_request_type_label(string $type): string
+{
+    return match ($type) {
+        PrivacyRequest::TYPE_ERASURE => 'Right to erasure',
+        PrivacyRequest::TYPE_DATA_BREACH => 'Personal data breach',
+        default => 'Subject access request',
+    };
+}
+
+function map_privacy_request(PrivacyRequest $request): array
+{
+    $requester = $request->requestedBy;
+    $handler = $request->handledBy;
+    $authorName = fn (?User $user) => $user
+        ? trim((string) ($user->name ?: (($user->first_name ?? '').' '.($user->surname ?? ''))))
+        : '';
+
+    $icoReviewDue = $request->request_type === PrivacyRequest::TYPE_DATA_BREACH
+        && $request->discovered_at
+        && $request->ico_notification_required
+        && $request->ico_notified_at === null;
+
+    $icoDeadline = $request->discovered_at?->copy()->addHours(72);
+
+    return [
+        'id' => $request->id,
+        'requestType' => $request->request_type,
+        'requestTypeLabel' => privacy_request_type_label($request->request_type),
+        'status' => $request->status,
+        'patientId' => $request->patient_id,
+        'patientName' => $request->patient?->name,
+        'patientUrlKey' => $request->patient?->url_key,
+        'subjectName' => $request->subject_name,
+        'subjectEmail' => $request->subject_email,
+        'requestDetails' => $request->request_details,
+        'outcomeNotes' => $request->outcome_notes,
+        'dueAt' => $request->due_at?->toDateString(),
+        'dueAtLabel' => $request->due_at?->format('d M Y'),
+        'discoveredAt' => $request->discovered_at?->toIso8601String(),
+        'discoveredAtLabel' => $request->discovered_at?->format('d M Y, H:i'),
+        'icoNotificationRequired' => $request->ico_notification_required,
+        'icoNotifiedAt' => $request->ico_notified_at?->toIso8601String(),
+        'icoNotifiedAtLabel' => $request->ico_notified_at?->format('d M Y, H:i'),
+        'icoDeadlineLabel' => $icoDeadline?->format('d M Y, H:i'),
+        'icoReviewOverdue' => $icoReviewDue
+            && $icoDeadline
+            && $icoDeadline->isPast()
+            && !in_array($request->status, ['completed', 'rejected'], true),
+        'individualsAffectedCount' => $request->individuals_affected_count,
+        'breachCategories' => $request->breach_categories,
+        'completedAt' => $request->completed_at?->toIso8601String(),
+        'completedAtLabel' => $request->completed_at?->format('d M Y, H:i'),
+        'isOverdue' => $request->due_at
+            && !in_array($request->status, ['completed', 'rejected'], true)
+            && $request->due_at->isPast(),
+        'requestedBy' => [
+            'id' => $requester?->id,
+            'name' => ($name = $authorName($requester)) !== '' ? $name : 'Unknown',
+        ],
+        'handledBy' => $handler
+            ? ['id' => $handler->id, 'name' => ($name = $authorName($handler)) !== '' ? $name : 'Unknown']
+            : null,
+        'createdAtLabel' => $request->created_at?->format('d M Y, H:i'),
+        'erasureJob' => map_privacy_erasure_job($request->erasureJob),
+    ];
+}
+
+function prepare_sar_pdf_view_data(Patient $patient, PrivacyRequest $privacyRequest): array
+{
+    $export = build_subject_access_export($patient);
+    $profile = $export['patient']['profile'] ?? [];
+
+    $profileRows = [
+        'Name' => $profile['name'] ?? $patient->name,
+        'Preferred name' => $profile['preferredName'] ?? '',
+        'NHS number' => $profile['nhsNumber'] ?? $patient->nhs_number,
+        'Date of birth' => $profile['dob'] ?? $patient->dob,
+        'Address' => $profile['address'] ?? $patient->address,
+        'GP' => trim(($profile['gpName'] ?? '').' '.($profile['gpPractice'] ?? '')),
+        'Primary diagnosis' => $profile['primaryDiagnosis'] ?? '',
+        'RAG status' => $profile['ragStatus'] ?? '',
+    ];
+
+    $observations = collect($export['observations'] ?? [])->take(25)->map(fn ($row) => [
+        'when' => $row['recordedAtLabel'] ?? '',
+        'hr' => $row['heartRate'] ?? null,
+        'bp' => isset($row['bpSystolic']) ? $row['bpSystolic'].'/'.($row['bpDiastolic'] ?? '—') : null,
+        'spo2' => $row['spo2'] ?? null,
+        'notes' => $row['otherObservation'] ?? '',
+    ])->all();
+
+    $fluidRecords = collect($export['fluid_records'] ?? [])->take(20)->map(fn ($row) => [
+        'when' => $row['recordedAtLabel'] ?? '',
+        'intake' => $row['fluidIntakeMl'] ?? null,
+        'output' => $row['fluidOutputMl'] ?? null,
+        'notes' => $row['notes'] ?? '',
+    ])->all();
+
+    $bowelRecords = collect($export['bowel_records'] ?? [])->take(20)->map(fn ($row) => [
+        'when' => $row['recordedAtLabel'] ?? '',
+        'summary' => trim(
+            ($row['bowelOpened'] ? 'Opened' : 'Not opened').' '.
+            ($row['bristolLabel'] ?? '').' '.
+            ($row['continenceStatus'] ?? '')
+        ),
+        'notes' => $row['notes'] ?? '',
+    ])->all();
+
+    $journal = collect($export['care_journal'] ?? [])->take(15)->map(fn ($row) => [
+        'when' => $row['recordedAtLabel'] ?? '',
+        'author' => $row['author']['name'] ?? 'Unknown',
+        'body' => Str::limit((string) ($row['body'] ?? ''), 500),
+    ])->all();
+
+    return [
+        'patientName' => $patient->name,
+        'patientReference' => $patient->reference,
+        'nhsNumber' => $patient->nhs_number,
+        'exportedAt' => now()->format('d M Y H:i'),
+        'requestId' => $privacyRequest->id,
+        'profileRows' => $profileRows,
+        'observations' => $observations,
+        'fluidRecords' => $fluidRecords,
+        'bowelRecords' => $bowelRecords,
+        'medications' => $export['medications'] ?? [],
+        'journal' => $journal,
+    ];
+}
+
+function append_privacy_breach_care_alerts($careAlerts, int $limit = 2): void
+{
+    if (!Schema::hasTable('privacy_requests')) {
+        return;
+    }
+
+    $added = 0;
+    $breaches = PrivacyRequest::query()
+        ->where('request_type', PrivacyRequest::TYPE_DATA_BREACH)
+        ->whereNotIn('status', ['completed', 'rejected'])
+        ->with('patient:id,name,url_key')
+        ->orderByDesc('created_at')
+        ->limit(10)
+        ->get();
+
+    foreach ($breaches as $breach) {
+        $icoDeadline = $breach->discovered_at?->copy()->addHours(72);
+        $needsIco = $breach->ico_notification_required && $breach->ico_notified_at === null;
+        $overdue = $needsIco && $icoDeadline && $icoDeadline->isPast();
+
+        $careAlerts->push([
+            'label' => 'DATA BREACH',
+            'patient' => $breach->subject_name ?? 'Unknown',
+            'details' => $overdue
+                ? 'ICO notification window may be overdue — review breach #'.$breach->id
+                : 'Open breach record — '.$breach->breach_categories,
+            'action' => 'Review',
+            'accent' => $overdue ? 'border-red-400' : 'border-rose-400',
+            'panel' => $overdue ? 'bg-red-50' : 'bg-rose-50',
+            'time' => $breach->discovered_at ?? $breach->created_at,
+            'patientUrlKey' => $breach->patient?->url_key,
+            'privacyRequestId' => $breach->id,
+            'href' => route('reports.gdpr').'#privacy-request-'.$breach->id,
+        ]);
+
+        $added++;
+        if ($added >= $limit) {
+            break;
+        }
+    }
+}
+
+function append_wound_review_care_alerts($careAlerts, int $limit = 2): void
+{
+    if (!Schema::hasTable('patient_wound_assessments')) {
+        return;
+    }
+
+    $added = 0;
+    $due = PatientWoundAssessment::query()
+        ->whereNotNull('review_due_at')
+        ->whereDate('review_due_at', '<=', now()->toDateString())
+        ->with('patient:id,name,url_key')
+        ->orderBy('review_due_at')
+        ->limit(10)
+        ->get();
+
+    foreach ($due as $assessment) {
+        $patientSlug = $assessment->patient?->url_key;
+        $careAlerts->push([
+            'label' => 'WOUND REVIEW',
+            'patient' => $assessment->patient?->name ?? 'Unknown',
+            'details' => 'Wound review due '.$assessment->review_due_at->format('d M Y').' — '.$assessment->wound_site,
+            'action' => 'Reassess',
+            'accent' => 'border-amber-400',
+            'panel' => 'bg-amber-50',
+            'time' => $assessment->review_due_at,
+            'patientUrlKey' => $patientSlug,
+            'href' => $patientSlug ? route('patients.wound-care', $patientSlug) : null,
+        ]);
+
+        $added++;
+        if ($added >= $limit) {
+            break;
+        }
+    }
+}
+
+function risk_assessment_templates(): array
+{
+    return [
+        ['slug' => 'falls-risk', 'title' => 'Falls Risk', 'suggestedControls' => ['2:1 support', 'Transfer belt', 'Falls mat']],
+        ['slug' => 'skin-integrity', 'title' => 'Skin Integrity Risk', 'suggestedControls' => ['Repositioning', 'Pressure mattress', 'Skin checks']],
+        ['slug' => 'aspiration-risk', 'title' => 'Aspiration / Choking Risk', 'suggestedControls' => ['IDDSI Level 4', 'Supervised feeding', 'Thickened fluids']],
+        ['slug' => 'medication-risk', 'title' => 'Medication Administration Risk', 'suggestedControls' => ['Double-check eMAR', 'Time-critical flag', 'Pharmacy review']],
+        ['slug' => 'elopement-risk', 'title' => 'Absconding / Missing Person Risk', 'suggestedControls' => ['Door sensor', 'Escort plan', 'Welfare check']],
+        ['slug' => 'infection-risk', 'title' => 'Infection Prevention Risk', 'suggestedControls' => ['PPE protocol', 'Daily observations', 'Isolation plan']],
+    ];
+}
+
+function risk_assessment_template(string $slug): ?array
+{
+    foreach (risk_assessment_templates() as $template) {
+        if ($template['slug'] === $slug) {
+            return $template;
+        }
+    }
+
+    return null;
+}
+
+function map_patient_risk_assessment(?PatientRiskAssessment $assessment, array $template, ?string $authorName = null): array
+{
+    $level = $assessment?->risk_level;
+    $levelLabel = $level ? Str::of($level)->replace('_', ' ')->title()->toString() : null;
+
+    return [
+        'slug' => $template['slug'],
+        'title' => $template['title'],
+        'suggestedControls' => $template['suggestedControls'],
+        'riskLevel' => $level,
+        'riskLevelLabel' => $levelLabel,
+        'status' => $assessment?->status ?? 'draft',
+        'triggers' => $assessment?->triggers,
+        'currentControls' => $assessment?->current_controls,
+        'mitigationPlan' => $assessment?->mitigation_plan,
+        'ownerName' => $assessment?->owner_name,
+        'lastReviewedAt' => $assessment?->last_reviewed_at?->toDateString(),
+        'lastReviewedAtLabel' => $assessment?->last_reviewed_at?->format('d M Y'),
+        'nextReviewDueAt' => $assessment?->next_review_due_at?->toDateString(),
+        'nextReviewDueAtLabel' => $assessment?->next_review_due_at?->format('d M Y'),
+        'reviewCycleMonths' => $assessment?->review_cycle_months ?? 3,
+        'reviewOverdue' => $assessment?->status === 'active'
+            && $assessment->next_review_due_at
+            && $assessment->next_review_due_at->isPast(),
+        'updatedAtLabel' => $assessment?->updated_at?->format('d M Y, H:i'),
+        'authorName' => $authorName,
+        'hasRecord' => $assessment !== null,
+        'assessmentId' => $assessment?->id,
+    ];
+}
+
+function risk_assessment_snapshot_from_model(PatientRiskAssessment $assessment): array
+{
+    return [
+        'risk_level' => $assessment->risk_level,
+        'status' => $assessment->status,
+        'triggers' => $assessment->triggers,
+        'current_controls' => $assessment->current_controls,
+        'mitigation_plan' => $assessment->mitigation_plan,
+        'owner_name' => $assessment->owner_name,
+        'last_reviewed_at' => $assessment->last_reviewed_at?->toDateString(),
+        'next_review_due_at' => $assessment->next_review_due_at?->toDateString(),
+        'review_cycle_months' => $assessment->review_cycle_months,
+    ];
+}
+
+function risk_assessment_change_summary(?array $previous, array $current): string
+{
+    if ($previous === null) {
+        return 'Initial assessment recorded';
+    }
+
+    $labels = [
+        'risk_level' => 'Risk level',
+        'status' => 'Status',
+        'triggers' => 'Triggers',
+        'current_controls' => 'Controls',
+        'mitigation_plan' => 'Mitigation plan',
+        'owner_name' => 'Owner',
+        'last_reviewed_at' => 'Last reviewed',
+        'next_review_due_at' => 'Next review',
+        'review_cycle_months' => 'Review cycle',
+    ];
+
+    $parts = [];
+    foreach ($labels as $key => $label) {
+        $old = $previous[$key] ?? null;
+        $new = $current[$key] ?? null;
+        if ((string) $old !== (string) $new) {
+            $parts[] = $label.': '.($old ?: '—').' → '.($new ?: '—');
+        }
+    }
+
+    return $parts !== [] ? implode('; ', array_slice($parts, 0, 4)) : 'Assessment updated';
+}
+
+function record_risk_assessment_version_if_changed(PatientRiskAssessment $assessment, ?User $user): void
+{
+    if (!Schema::hasTable('patient_risk_assessment_versions')) {
+        return;
+    }
+
+    $snapshot = risk_assessment_snapshot_from_model($assessment);
+    $latest = PatientRiskAssessmentVersion::query()
+        ->where('patient_risk_assessment_id', $assessment->id)
+        ->orderByDesc('recorded_at')
+        ->first();
+
+    $previous = $latest?->snapshot;
+    if ($previous !== null && $previous === $snapshot) {
+        return;
+    }
+
+    PatientRiskAssessmentVersion::query()->create([
+        'patient_risk_assessment_id' => $assessment->id,
+        'patient_id' => $assessment->patient_id,
+        'risk_slug' => $assessment->risk_slug,
+        'snapshot' => $snapshot,
+        'change_summary' => risk_assessment_change_summary($previous, $snapshot),
+        'recorded_by_user_id' => $user?->id,
+        'recorded_at' => now(),
+    ]);
+}
+
+function user_display_name(?User $user): ?string
+{
+    if (!$user) {
+        return null;
+    }
+
+    $name = trim((string) ($user->name ?: (($user->first_name ?? '').' '.($user->surname ?? ''))));
+
+    return $name !== '' ? $name : 'Unknown user';
+}
+
+function list_risk_assessment_versions(PatientRiskAssessment $assessment, int $limit = 20): array
+{
+    if (!Schema::hasTable('patient_risk_assessment_versions')) {
+        return [];
+    }
+
+    $userIds = PatientRiskAssessmentVersion::query()
+        ->where('patient_risk_assessment_id', $assessment->id)
+        ->pluck('recorded_by_user_id')
+        ->filter()
+        ->unique();
+
+    $namesById = User::query()
+        ->whereIn('id', $userIds)
+        ->get(['id', 'name', 'first_name', 'surname'])
+        ->mapWithKeys(fn (User $user) => [$user->id => user_display_name($user)]);
+
+    return PatientRiskAssessmentVersion::query()
+        ->where('patient_risk_assessment_id', $assessment->id)
+        ->orderByDesc('recorded_at')
+        ->limit($limit)
+        ->get()
+        ->map(function (PatientRiskAssessmentVersion $version) use ($namesById) {
+            $snapshot = $version->snapshot ?? [];
+            $level = $snapshot['risk_level'] ?? null;
+
+            return [
+                'id' => $version->id,
+                'recordedAt' => $version->recorded_at?->toIso8601String(),
+                'recordedAtLabel' => $version->recorded_at?->format('d M Y, H:i'),
+                'authorName' => $namesById[$version->recorded_by_user_id] ?? 'Unknown user',
+                'changeSummary' => $version->change_summary,
+                'riskLevel' => $level,
+                'riskLevelLabel' => $level ? Str::of($level)->title()->toString() : null,
+                'status' => $snapshot['status'] ?? null,
+                'statusLabel' => isset($snapshot['status'])
+                    ? Str::of($snapshot['status'])->replace('_', ' ')->title()->toString()
+                    : null,
+                'snapshot' => $snapshot,
+            ];
+        })
+        ->values()
+        ->all();
+}
+
+function build_risk_assessment_pdf_payload(Patient $patient, PatientRiskAssessment $assessment, array $template, ?string $authorName): array
+{
+    $level = $assessment->risk_level;
+
+    return [
+        'risk_level' => $level,
+        'risk_level_label' => $level ? Str::of($level)->title()->toString() : '—',
+        'status_label' => Str::of($assessment->status)->replace('_', ' ')->title()->toString(),
+        'owner_name' => $assessment->owner_name,
+        'last_reviewed_at_label' => $assessment->last_reviewed_at?->format('d M Y'),
+        'next_review_due_at_label' => $assessment->next_review_due_at?->format('d M Y'),
+        'review_cycle_months' => $assessment->review_cycle_months,
+        'triggers' => $assessment->triggers,
+        'current_controls' => $assessment->current_controls,
+        'mitigation_plan' => $assessment->mitigation_plan,
+        'author_name' => $authorName,
+        'updated_at_label' => $assessment->updated_at?->format('d M Y, H:i'),
+    ];
+}
+
+function append_risk_review_care_alerts($careAlerts, int $limit = 2): void
+{
+    if (!Schema::hasTable('patient_risk_assessments')) {
+        return;
+    }
+
+    $added = 0;
+    $due = PatientRiskAssessment::query()
+        ->where('status', 'active')
+        ->whereNotNull('next_review_due_at')
+        ->whereDate('next_review_due_at', '<=', now()->toDateString())
+        ->with('patient:id,name,url_key')
+        ->orderBy('next_review_due_at')
+        ->limit(10)
+        ->get();
+
+    foreach ($due as $assessment) {
+        $template = risk_assessment_template($assessment->risk_slug);
+        $title = $template['title'] ?? Str::of($assessment->risk_slug)->replace('-', ' ')->title()->toString();
+        $patientSlug = $assessment->patient?->url_key;
+
+        $careAlerts->push([
+            'label' => 'RISK REVIEW',
+            'patient' => $assessment->patient?->name ?? 'Unknown',
+            'details' => $title.' review overdue (due '.$assessment->next_review_due_at->format('d M Y').')',
+            'action' => 'Review',
+            'accent' => 'border-orange-400',
+            'panel' => 'bg-orange-50',
+            'time' => $assessment->next_review_due_at,
+            'patientUrlKey' => $patientSlug,
+            'riskSlug' => $assessment->risk_slug,
+            'href' => $patientSlug
+                ? route('patients.risks.show', ['patient' => $patientSlug, 'risk' => $assessment->risk_slug])
+                : null,
+        ]);
+
+        $added++;
+        if ($added >= $limit) {
+            break;
+        }
+    }
+}
+
+function list_mar_witness_staff(): array
+{
+    return User::query()
+        ->whereIn('primary_role', ['care_worker', 'supervisor', 'care_manager', 'admin', 'super_admin'])
+        ->orderBy('name')
+        ->get(['id', 'name', 'first_name', 'surname'])
+        ->map(function (User $user) {
+            $name = trim((string) ($user->name ?: (($user->first_name ?? '').' '.($user->surname ?? ''))));
+
+            return ['id' => $user->id, 'name' => $name !== '' ? $name : 'Staff #'.$user->id];
+        })
+        ->values()
+        ->all();
+}
+
+function map_medication_stock(?MedicationStock $stock, PatientMedication $medication): array
+{
+    return [
+        'medicationId' => $medication->id,
+        'medicationName' => $medication->name,
+        'isControlled' => $medication->is_controlled,
+        'balance' => $stock ? (float) $stock->balance : 0,
+        'unit' => $stock?->unit ?? 'doses',
+        'reconciledAtLabel' => $stock?->reconciled_at?->format('d M Y, H:i'),
+        'lowStock' => $medication->is_controlled && $stock && (float) $stock->balance <= 5,
+    ];
+}
+
+function record_medication_stock_movement(
+    PatientMedication $medication,
+    string $movementType,
+    float $quantityDelta,
+    ?User $user = null,
+    ?string $notes = null,
+    ?int $administrationId = null,
+): MedicationStock {
+    $stock = MedicationStock::query()->firstOrCreate(
+        ['patient_medication_id' => $medication->id],
+        ['balance' => 0, 'unit' => 'doses'],
+    );
+
+    $newBalance = max(0, round((float) $stock->balance + $quantityDelta, 2));
+
+    MedicationStockMovement::query()->create([
+        'patient_medication_id' => $medication->id,
+        'recorded_by_user_id' => $user?->id,
+        'movement_type' => $movementType,
+        'quantity_delta' => $quantityDelta,
+        'balance_after' => $newBalance,
+        'notes' => $notes,
+        'medication_administration_id' => $administrationId,
+    ]);
+
+    $stock->update(['balance' => $newBalance]);
+
+    return $stock->fresh();
+}
+
+function map_data_retention_schedule(DataRetentionSchedule $row): array
+{
+    $reviewDue = $row->last_reviewed_at
+        ? $row->last_reviewed_at->copy()->addMonths((int) $row->review_cycle_months)
+        : null;
+
+    return [
+        'id' => $row->id,
+        'dataCategory' => $row->data_category,
+        'retentionPeriod' => $row->retention_period,
+        'legalBasis' => $row->legal_basis,
+        'reviewCycleMonths' => $row->review_cycle_months,
+        'lastReviewedAt' => $row->last_reviewed_at?->toDateString(),
+        'lastReviewedAtLabel' => $row->last_reviewed_at?->format('d M Y'),
+        'reviewDueAt' => $reviewDue?->toDateString(),
+        'reviewOverdue' => $reviewDue && $reviewDue->isPast(),
+        'notes' => $row->notes,
+    ];
+}
+
+function map_privacy_notice(PrivacyNotice $notice): array
+{
+    return [
+        'id' => $notice->id,
+        'title' => $notice->title,
+        'version' => $notice->version,
+        'summary' => $notice->summary,
+        'content' => $notice->content,
+        'publishedAt' => $notice->published_at?->toDateString(),
+        'publishedAtLabel' => $notice->published_at?->format('d M Y'),
+        'isActive' => $notice->is_active,
+    ];
+}
+
+function map_privacy_erasure_job(?PrivacyErasureJob $job): ?array
+{
+    if (!$job) {
+        return null;
+    }
+
+    return [
+        'id' => $job->id,
+        'status' => $job->status,
+        'statusLabel' => Str::of($job->status)->replace('_', ' ')->title()->toString(),
+        'scheduledAtLabel' => $job->scheduled_at?->format('d M Y, H:i'),
+        'processedAtLabel' => $job->processed_at?->format('d M Y, H:i'),
+        'resultSummary' => $job->result_summary,
+        'errorMessage' => $job->error_message,
+    ];
+}
+
+function append_data_retention_care_alerts($careAlerts, int $limit = 2): void
+{
+    if (!Schema::hasTable('data_retention_schedules')) {
+        return;
+    }
+
+    $added = 0;
+    $schedules = DataRetentionSchedule::query()->orderBy('data_category')->limit(20)->get();
+
+    foreach ($schedules as $schedule) {
+        $mapped = map_data_retention_schedule($schedule);
+        if (!($mapped['reviewOverdue'] ?? false)) {
+            continue;
+        }
+
+        $careAlerts->push([
+            'label' => 'RETENTION REVIEW',
+            'patient' => $schedule->data_category,
+            'details' => 'Data retention schedule review overdue',
+            'action' => 'Review',
+            'accent' => 'border-violet-400',
+            'panel' => 'bg-violet-50',
+            'time' => $schedule->last_reviewed_at ?? $schedule->updated_at,
+            'href' => route('reports.gdpr').'#retention-schedules',
+        ]);
+
+        $added++;
+        if ($added >= $limit) {
+            break;
+        }
+    }
+}
+
+function queue_privacy_erasure_job(PrivacyRequest $request): PrivacyErasureJob
+{
+    return PrivacyErasureJob::query()->firstOrCreate(
+        ['privacy_request_id' => $request->id],
+        [
+            'patient_id' => $request->patient_id,
+            'status' => PrivacyErasureJob::STATUS_PENDING,
+            'scheduled_at' => now(),
+        ],
+    );
+}
+
+function process_privacy_erasure_job(PrivacyErasureJob $job): bool
+{
+    $job->update(['status' => PrivacyErasureJob::STATUS_PROCESSING]);
+
+    try {
+        $patient = $job->patient ?? $job->privacyRequest?->patient;
+        if (!$patient) {
+            throw new \RuntimeException('No patient linked to erasure job.');
+        }
+
+        $previousName = $patient->name;
+        $anonymisedName = 'Erased Service User #'.$patient->id;
+
+        if ($patient->photo_path && Storage::disk('public')->exists($patient->photo_path)) {
+            Storage::disk('public')->delete($patient->photo_path);
+        }
+
+        $patient->update([
+            'name' => $anonymisedName,
+            'preferred_name' => null,
+            'nhs_number' => null,
+            'gp_name' => null,
+            'gp_practice' => null,
+            'gp_phone' => null,
+            'address' => null,
+            'latitude' => null,
+            'longitude' => null,
+            'phone' => null,
+            'next_of_kin' => null,
+            'next_of_kin_tel' => null,
+            'next_of_kin_email' => null,
+            'other_relevant_people' => null,
+            'social_services_number' => null,
+            'social_worker_name' => null,
+            'social_worker_contact' => null,
+            'commissioner_name' => null,
+            'commissioner_contact' => null,
+            'emergency_contact_name' => null,
+            'emergency_contact_phone' => null,
+            'photo_path' => null,
+            'status' => 'archived',
+        ]);
+
+        if (Schema::hasTable('care_journal_entries')) {
+            CareJournalEntry::query()
+                ->where('patient_id', $patient->id)
+                ->update(['body' => '[Redacted following erasure request]']);
+        }
+
+        $summary = 'Anonymised patient profile for "'.$previousName.'" → "'.$anonymisedName.'". Photo removed; journal bodies redacted.';
+
+        $job->update([
+            'status' => PrivacyErasureJob::STATUS_COMPLETED,
+            'processed_at' => now(),
+            'result_summary' => $summary,
+            'error_message' => null,
+        ]);
+
+        if ($job->privacyRequest) {
+            $notes = trim((string) $job->privacyRequest->outcome_notes);
+            $autoNote = 'Erasure job #'.$job->id.' completed at '.now()->format('d M Y H:i').'. '.$summary;
+            $job->privacyRequest->update([
+                'outcome_notes' => $notes !== '' ? $notes."\n\n".$autoNote : $autoNote,
+            ]);
+        }
+
+        AuditTrail::record(
+            'updated',
+            'Processed GDPR erasure for patient #'.$patient->id,
+            'privacy_erasure',
+            (string) $job->id,
+            $anonymisedName,
+            ['privacy_request_id' => $job->privacy_request_id],
+            ['patient_url_key' => $patient->url_key],
+        );
+
+        return true;
+    } catch (\Throwable $exception) {
+        $job->update([
+            'status' => PrivacyErasureJob::STATUS_FAILED,
+            'processed_at' => now(),
+            'error_message' => $exception->getMessage(),
+        ]);
+
+        return false;
+    }
+}
+
+function generate_incident_reference(): string
+{
+    $year = now()->format('Y');
+    $count = PatientIncident::query()->whereYear('submitted_at', $year)->count() + 1;
+
+    return 'INC-'.$year.'-'.str_pad((string) $count, 4, '0', STR_PAD_LEFT);
+}
+
+function incident_involves_personal_data(array $data): bool
+{
+    $impacts = $data['selectedImpacts'] ?? [];
+    if (is_array($impacts) && in_array('Personal / confidential data', $impacts, true)) {
+        return true;
+    }
+
+    $blob = strtolower(implode(' ', array_filter([
+        (string) ($data['incidentTitle'] ?? ''),
+        (string) ($data['behaviour'] ?? ''),
+        (string) ($data['consequence'] ?? ''),
+        (string) ($data['immediateOutcome'] ?? ''),
+        (string) ($data['lessonsLearnt'] ?? ''),
+        (string) ($data['actionsPlanned'] ?? ''),
+    ])));
+
+    if ($blob === '') {
+        return false;
+    }
+
+    return (bool) preg_match(
+        '/\b(personal data|data breach|confidential|gdpr|privacy|nhs number|medical record|health data|special category)\b/',
+        $blob,
+    );
+}
+
+function record_patient_incident_submission(Patient $patient, array $data, ?User $reporter): PatientIncident
+{
+    $incident = PatientIncident::query()->create([
+        'patient_id' => $patient->id,
+        'reported_by_user_id' => $reporter?->id,
+        'reference' => generate_incident_reference(),
+        'incident_title' => trim((string) ($data['incidentTitle'] ?? '')) ?: null,
+        'incident_date' => !empty($data['incidentDate']) ? Carbon::parse((string) $data['incidentDate'])->toDateString() : null,
+        'incident_time' => trim((string) ($data['incidentTime'] ?? '')) ?: null,
+        'location' => trim((string) ($data['location'] ?? '')) ?: null,
+        'data' => $data,
+        'submitted_at' => now(),
+    ]);
+
+    IncidentInvestigation::query()->create([
+        'patient_incident_id' => $incident->id,
+        'investigation_status' => IncidentInvestigation::STATUS_PENDING,
+        'due_at' => now()->addDays(7)->toDateString(),
+    ]);
+
+    return $incident;
+}
+
+function map_incident_investigation(?IncidentInvestigation $investigation): ?array
+{
+    if (!$investigation) {
+        return null;
+    }
+
+    $investigator = $investigation->investigator;
+    $investigatorName = $investigator
+        ? trim((string) ($investigator->name ?: (($investigator->first_name ?? '').' '.($investigator->surname ?? ''))))
+        : '';
+
+    $riddorOverdue = $investigation->riddor_reportable
+        && $investigation->riddor_reported_at === null
+        && $investigation->incident?->submitted_at?->copy()->addHours(72)->isPast();
+
+    $safeguardingPending = $investigation->safeguarding_concern && !$investigation->safeguarding_referral_made;
+
+    return [
+        'id' => $investigation->id,
+        'status' => $investigation->investigation_status,
+        'statusLabel' => Str::of($investigation->investigation_status)->replace('_', ' ')->title()->toString(),
+        'investigatorName' => $investigatorName !== '' ? $investigatorName : null,
+        'dueAt' => $investigation->due_at?->toDateString(),
+        'dueAtLabel' => $investigation->due_at?->format('d M Y'),
+        'investigationOverdue' => $investigation->due_at
+            && !in_array($investigation->investigation_status, [IncidentInvestigation::STATUS_COMPLETED, IncidentInvestigation::STATUS_CLOSED], true)
+            && $investigation->due_at->isPast(),
+        'investigationSummary' => $investigation->investigation_summary,
+        'rootCause' => $investigation->root_cause,
+        'correctiveActions' => $investigation->corrective_actions,
+        'riddorReportable' => $investigation->riddor_reportable,
+        'riddorCategory' => $investigation->riddor_category,
+        'riddorCategoryLabel' => $investigation->riddor_category
+            ? Str::of($investigation->riddor_category)->replace('_', ' ')->title()->toString()
+            : null,
+        'riddorReportedAt' => $investigation->riddor_reported_at?->toIso8601String(),
+        'riddorReportedAtLabel' => $investigation->riddor_reported_at?->format('d M Y, H:i'),
+        'riddorReference' => $investigation->riddor_reference,
+        'riddorOverdue' => $riddorOverdue,
+        'safeguardingConcern' => $investigation->safeguarding_concern,
+        'safeguardingReferralMade' => $investigation->safeguarding_referral_made,
+        'safeguardingReferralAt' => $investigation->safeguarding_referral_at?->toIso8601String(),
+        'safeguardingReferralAtLabel' => $investigation->safeguarding_referral_at?->format('d M Y, H:i'),
+        'safeguardingAuthority' => $investigation->safeguarding_authority,
+        'safeguardingReference' => $investigation->safeguarding_reference,
+        'safeguardingPending' => $safeguardingPending,
+    ];
+}
+
+function map_patient_incident_for_list(PatientIncident $incident): array
+{
+    $data = $incident->data ?? [];
+    $reporter = $incident->reportedBy;
+
+    return [
+        'id' => $incident->id,
+        'reference' => $incident->reference,
+        'title' => $incident->incident_title ?? ($data['incidentTitle'] ?? '-'),
+        'patient_name' => $incident->patient?->name ?? 'Unknown',
+        'patient_url_key' => $incident->patient?->url_key,
+        'reporter' => $reporter?->name ?? ($data['reporterName'] ?? 'Unknown'),
+        'incident_date' => $incident->incident_date?->format('Y-m-d') ?? ($data['incidentDate'] ?? '-'),
+        'incident_time' => $incident->incident_time ?? ($data['incidentTime'] ?? '-'),
+        'location' => $incident->location ?? ($data['location'] ?? '-'),
+        'tags' => $data['selectedTags'] ?? ($data['tags'] ?? []),
+        'status' => 'Submitted',
+        'duration_minutes' => $data['incidentDuration'] ?? ($data['durationMinutes'] ?? null),
+        'submitted_at' => $incident->submitted_at->format('d M Y H:i'),
+        'investigation' => map_incident_investigation($incident->investigation),
+    ];
+}
+
+function map_patient_incident_detail(PatientIncident $incident): array
+{
+    $data = $incident->data ?? [];
+    $reporter = $incident->reportedBy;
+
+    return [
+        'id' => $incident->id,
+        'reference' => $incident->reference,
+        'title' => $incident->incident_title ?? ($data['incidentTitle'] ?? '-'),
+        'patient_name' => $incident->patient?->name ?? 'Unknown',
+        'patient_url_key' => $incident->patient?->url_key,
+        'patient_dob' => $incident->patient?->dob ?? '-',
+        'patient_address' => $incident->patient?->address ?? '-',
+        'reporter' => $data['reporterName'] ?? ($reporter?->name ?? 'Unknown'),
+        'incident_date' => $incident->incident_date?->format('Y-m-d') ?? ($data['incidentDate'] ?? '-'),
+        'incident_time' => $incident->incident_time ?? ($data['incidentTime'] ?? '-'),
+        'location' => $incident->location ?? ($data['location'] ?? '-'),
+        'antecedent' => $data['antecedent'] ?? '-',
+        'behaviour' => $data['behaviour'] ?? '-',
+        'consequence' => $data['consequence'] ?? '-',
+        'immediate_outcome' => $data['immediateOutcome'] ?? '-',
+        'lessons_learnt' => $data['lessonsLearnt'] ?? '-',
+        'new_triggers' => $data['newTriggers'] ?? '-',
+        'actions_planned' => $data['actionsPlanned'] ?? '-',
+        'tags' => $data['selectedTags'] ?? [],
+        'impacts' => $data['selectedImpacts'] ?? [],
+        'duration_minutes' => $data['incidentDuration'] ?? null,
+        'staff_members' => $data['staffMembers'] ?? [],
+        'manager_name' => $data['managerName'] ?? '-',
+        'manager_sign_off' => $data['managerSignOff'] ?? false,
+        'status' => 'Submitted',
+        'submitted_at' => $incident->submitted_at->format('d M Y H:i'),
+        'investigation' => map_incident_investigation($incident->investigation),
+    ];
+}
+
+function append_incident_investigation_care_alerts($careAlerts, int $limit = 2): void
+{
+    if (!Schema::hasTable('incident_investigations')) {
+        return;
+    }
+
+    $added = 0;
+    $investigations = IncidentInvestigation::query()
+        ->whereNotIn('investigation_status', [IncidentInvestigation::STATUS_COMPLETED, IncidentInvestigation::STATUS_CLOSED])
+        ->with(['incident.patient:id,name,url_key'])
+        ->orderByDesc('created_at')
+        ->limit(15)
+        ->get();
+
+    foreach ($investigations as $investigation) {
+        $incident = $investigation->incident;
+        $patientSlug = $incident?->patient?->url_key;
+        $overdue = $investigation->due_at && $investigation->due_at->isPast();
+        $riddorOverdue = $investigation->riddor_reportable
+            && !$investigation->riddor_reported_at
+            && $incident?->submitted_at?->copy()->addHours(72)->isPast();
+
+        if (!$overdue && !$riddorOverdue && !($investigation->safeguarding_concern && !$investigation->safeguarding_referral_made)) {
+            continue;
+        }
+
+        $details = $riddorOverdue
+            ? 'RIDDOR reporting may be overdue — '.$incident?->reference
+            : ($investigation->safeguarding_concern && !$investigation->safeguarding_referral_made
+                ? 'Safeguarding referral pending — '.$incident?->reference
+                : 'Investigation overdue — '.$incident?->reference);
+
+        $careAlerts->push([
+            'label' => 'INCIDENT',
+            'patient' => $incident?->patient?->name ?? 'Unknown',
+            'details' => $details,
+            'action' => 'Investigate',
+            'accent' => $riddorOverdue ? 'border-red-400' : 'border-orange-400',
+            'panel' => $riddorOverdue ? 'bg-red-50' : 'bg-orange-50',
+            'time' => $investigation->due_at ?? $incident?->submitted_at,
+            'patientUrlKey' => $patientSlug,
+            'incidentId' => $incident?->id,
+            'href' => $incident
+                ? route('reports.incidents.show', $incident->id)
+                : route('reports.incidents'),
+        ]);
+
+        $added++;
+        if ($added >= $limit) {
+            break;
+        }
+    }
+}
+
+function build_subject_access_export(Patient $patient): array
+{
+    $profile = map_patient_profile_payload($patient);
+
+    return [
+        'exported_at' => now()->toIso8601String(),
+        'patient' => [
+            'url_key' => $patient->url_key,
+            'reference' => $patient->reference,
+            'profile' => $profile,
+        ],
+        'observations' => PatientVital::query()
+            ->where('patient_id', $patient->id)
+            ->orderByDesc('recorded_at')
+            ->limit(100)
+            ->get()
+            ->map(fn (PatientVital $v) => map_patient_vital($v))
+            ->values()
+            ->all(),
+        'fluid_records' => PatientFluidRecord::query()
+            ->where('patient_id', $patient->id)
+            ->orderByDesc('recorded_at')
+            ->limit(100)
+            ->get()
+            ->map(fn (PatientFluidRecord $r) => map_patient_fluid_record($r))
+            ->values()
+            ->all(),
+        'bowel_records' => PatientBowelRecord::query()
+            ->where('patient_id', $patient->id)
+            ->orderByDesc('recorded_at')
+            ->limit(100)
+            ->get()
+            ->map(fn (PatientBowelRecord $r) => map_patient_bowel_record($r))
+            ->values()
+            ->all(),
+        'handovers' => PatientHandover::query()
+            ->where('patient_id', $patient->id)
+            ->orderByDesc('recorded_at')
+            ->limit(50)
+            ->get()
+            ->map(fn (PatientHandover $h) => map_patient_handover($h))
+            ->values()
+            ->all(),
+        'wound_assessments' => PatientWoundAssessment::query()
+            ->where('patient_id', $patient->id)
+            ->orderByDesc('recorded_at')
+            ->limit(50)
+            ->get()
+            ->map(fn (PatientWoundAssessment $w) => map_patient_wound_assessment($w))
+            ->values()
+            ->all(),
+        'care_journal' => CareJournalEntry::query()
+            ->where('patient_id', $patient->id)
+            ->orderByDesc('recorded_at')
+            ->limit(50)
+            ->get()
+            ->map(fn (CareJournalEntry $e) => map_care_journal_entry($e))
+            ->values()
+            ->all(),
+        'medications' => PatientMedication::query()
+            ->where('patient_id', $patient->id)
+            ->orderBy('name')
+            ->get(['name', 'dose', 'route', 'scheduled_time', 'active'])
+            ->map(fn ($m) => [
+                'name' => $m->name,
+                'dose' => $m->dose,
+                'route' => $m->route,
+                'scheduledTime' => $m->scheduled_time,
+                'active' => $m->active,
+            ])
+            ->values()
+            ->all(),
+        'schedules' => PatientSchedule::query()
+            ->where('patient_id', $patient->id)
+            ->orderByDesc('start_at')
+            ->limit(50)
+            ->get()
+            ->map(fn ($s) => [
+                'startAt' => $s->start_at?->toIso8601String(),
+                'endAt' => $s->end_at?->toIso8601String(),
+                'status' => $s->status,
+                'purpose' => $s->purpose,
+            ])
+            ->values()
+            ->all(),
+        'care_plans' => PatientCarePlanForm::query()
+            ->where('patient_slug', $patient->url_key)
+            ->get(['plan_slug', 'status', 'submitted_at', 'updated_at'])
+            ->map(fn ($f) => [
+                'planSlug' => $f->plan_slug,
+                'status' => $f->status,
+                'submittedAt' => $f->submitted_at,
+                'updatedAt' => $f->updated_at,
+            ])
+            ->values()
+            ->all(),
+    ];
+}
+
+function care_plan_catalogue(): array
+{
+    return [
+        ['slug' => 'personal-care-and-dignity', 'title' => 'Personal Care & Dignity', 'default_risks' => ['None']],
+        ['slug' => 'mobility-and-moving', 'title' => 'Mobility & Moving / Handling', 'default_risks' => ['Fall Risk']],
+        ['slug' => 'nutrition-and-hydration', 'title' => 'Nutrition, Hydration & Dysphagia', 'default_risks' => ['Choking Risk', 'Weight Loss']],
+        ['slug' => 'medication-support', 'title' => 'Medication & Treatment', 'default_risks' => ['None']],
+        ['slug' => 'pressure-area-care', 'title' => 'Pressure Area Care & Tissue Viability', 'default_risks' => ['None']],
+        ['slug' => 'seizure-management', 'title' => 'Seizure Management', 'default_risks' => ['None']],
+        ['slug' => 'respiratory-care', 'title' => 'Respiratory Care', 'default_risks' => ['Breathlessness']],
+        ['slug' => 'enteral-feeding', 'title' => 'Enteral Feeding', 'default_risks' => ['None']],
+        ['slug' => 'diabetes-management', 'title' => 'Diabetes Management', 'default_risks' => ['N/A']],
+        ['slug' => 'behaviour-support', 'title' => 'Behaviour Support & Distressed Behaviour', 'default_risks' => ['N/A']],
+        ['slug' => 'continence-care', 'title' => 'Catheter & Continence Care', 'default_risks' => ['Skin Breakdown']],
+        ['slug' => 'wound-care', 'title' => 'Wound Care', 'default_risks' => ['None']],
+        ['slug' => 'sleeping-and-resting', 'title' => 'Sleeping & Night Support', 'default_risks' => ['None']],
+        ['slug' => 'community-access', 'title' => 'Community Access & Transport', 'default_risks' => ['None']],
+        ['slug' => 'mental-health-and-emotional-wellbeing', 'title' => 'Mental Health & Emotional Wellbeing', 'default_risks' => ['None']],
+        ['slug' => 'communication-and-sensory', 'title' => 'Communication & Sensory', 'default_risks' => ['None']],
+        ['slug' => 'infection-prevention-and-monitoring', 'title' => 'Infection Prevention & Monitoring', 'default_risks' => ['None']],
+        ['slug' => 'bowel-and-stoma-care', 'title' => 'Bowel & Stoma Care', 'default_risks' => ['None']],
+        ['slug' => 'pain-management', 'title' => 'Pain Management', 'default_risks' => ['None']],
+        ['slug' => 'end-of-life-support', 'title' => 'End of Life / Advance Care Planning', 'default_risks' => ['None']],
+    ];
+}
+
+function care_plan_status_label(?string $status): string
+{
+    return match (strtolower(trim((string) $status))) {
+        'draft' => 'Draft',
+        'reviewed' => 'Under Review',
+        'submitted' => 'Active',
+        default => 'Not started',
+    };
+}
+
+function care_plan_risks_from_data(?array $data, array $defaultRisks = ['Not assessed']): array
+{
+    if (!is_array($data)) {
+        return $defaultRisks;
+    }
+
+    $raw = trim((string) ($data['linked_risks_rag'] ?? ''));
+    if ($raw === '') {
+        return $defaultRisks;
+    }
+
+    $parts = preg_split('/[,;\n]+/', $raw) ?: [];
+    $risks = array_values(array_filter(array_map('trim', $parts)));
+
+    return $risks !== [] ? $risks : $defaultRisks;
+}
+
+function build_patient_care_plan_cards(string $patientSlug): array
+{
+    $forms = PatientCarePlanForm::query()
+        ->where('patient_slug', $patientSlug)
+        ->get()
+        ->keyBy('plan_slug');
+
+    $updaterIds = $forms->pluck('updated_by_user_id')->filter()->unique()->values();
+    $updaterNamesById = User::query()
+        ->whereIn('id', $updaterIds)
+        ->get(['id', 'name', 'first_name', 'surname'])
+        ->mapWithKeys(function (User $user) {
+            $fullName = trim((string) ($user->name ?? ''));
+            if ($fullName === '') {
+                $fullName = trim((string) (($user->first_name ?? '').' '.($user->surname ?? '')));
+            }
+
+            return [$user->id => ($fullName !== '' ? $fullName : 'Unknown user')];
+        });
+
+    return collect(care_plan_catalogue())
+        ->map(function (array $plan) use ($forms, $updaterNamesById) {
+            $form = $forms->get($plan['slug']);
+            $status = care_plan_status_label($form?->status);
+            $hasRecord = $form !== null;
+
+            return [
+                'slug' => $plan['slug'],
+                'title' => $plan['title'],
+                'status' => $status,
+                'risks' => $hasRecord
+                    ? care_plan_risks_from_data($form->data, $plan['default_risks'])
+                    : $plan['default_risks'],
+                'date' => $hasRecord && $form->updated_at
+                    ? $form->updated_at->format('d M Y, H:i')
+                    : 'Not yet updated',
+                'author' => $hasRecord
+                    ? ($updaterNamesById[$form->updated_by_user_id] ?? 'Unknown user')
+                    : 'Not yet updated',
+                'hasRecord' => $hasRecord,
+            ];
+        })
+        ->values()
+        ->all();
 }
 
 function care_plan_schema_version(string $planSlug): int
@@ -483,6 +2102,196 @@ function care_plan_summary_payload(string $planSlug, array $data): array
     ];
 }
 
+function normalize_alert_analysis_percentages(int $resolved, int $missed, int $flagged): array
+{
+    $total = $resolved + $missed + $flagged;
+    if ($total === 0) {
+        return [
+            'resolved' => 0,
+            'missed' => 0,
+            'flagged' => 0,
+            'total' => 0,
+            'resolvedCount' => 0,
+            'missedCount' => 0,
+            'flaggedCount' => 0,
+        ];
+    }
+
+    $resolvedPct = (int) round(100 * $resolved / $total);
+    $missedPct = (int) round(100 * $missed / $total);
+    $flaggedPct = (int) round(100 * $flagged / $total);
+    $adjust = 100 - ($resolvedPct + $missedPct + $flaggedPct);
+
+    if ($adjust !== 0) {
+        if ($resolved >= $missed && $resolved >= $flagged) {
+            $resolvedPct += $adjust;
+        } elseif ($missed >= $flagged) {
+            $missedPct += $adjust;
+        } else {
+            $flaggedPct += $adjust;
+        }
+    }
+
+    return [
+        'resolved' => $resolvedPct,
+        'missed' => $missedPct,
+        'flagged' => $flaggedPct,
+        'total' => $total,
+        'resolvedCount' => $resolved,
+        'missedCount' => $missed,
+        'flaggedCount' => $flagged,
+    ];
+}
+
+function alerts_analysis_drill_down_href(string $key, Carbon $startOfWeek, Carbon $endOfWeek, ?User $user): string
+{
+    $from = $startOfWeek->format('Y-m-d');
+    $to = $endOfWeek->format('Y-m-d');
+    $canViewReports = AuditTrail::canViewReports($user);
+
+    return match ($key) {
+        'medications' => $canViewReports
+            ? route('reports.medications', ['from' => $from, 'to' => $to])
+            : route('care-alerts'),
+        'personal_care' => $canViewReports
+            ? route('reports.schedules', ['from' => $from, 'to' => $to])
+            : route('schedules'),
+        'observations' => $canViewReports
+            ? route('reports.clinical-outcomes', ['from' => $from, 'to' => $to])
+            : route('care-alerts'),
+        default => route('dashboard'),
+    };
+}
+
+function apply_risk_assessment_snapshot(PatientRiskAssessment $assessment, array $snapshot, User $user): void
+{
+    $lastReviewed = isset($snapshot['last_reviewed_at'])
+        ? Carbon::parse((string) $snapshot['last_reviewed_at'])->toDateString()
+        : now()->toDateString();
+    $cycleMonths = (int) ($snapshot['review_cycle_months'] ?? 3);
+    $nextDue = isset($snapshot['next_review_due_at'])
+        ? Carbon::parse((string) $snapshot['next_review_due_at'])->toDateString()
+        : Carbon::parse($lastReviewed)->addMonths($cycleMonths)->toDateString();
+
+    $assessment->update([
+        'risk_level' => $snapshot['risk_level'] ?? $assessment->risk_level,
+        'status' => $snapshot['status'] ?? $assessment->status,
+        'triggers' => $snapshot['triggers'] ?? null,
+        'current_controls' => $snapshot['current_controls'] ?? null,
+        'mitigation_plan' => $snapshot['mitigation_plan'] ?? null,
+        'owner_name' => $snapshot['owner_name'] ?? null,
+        'last_reviewed_at' => $lastReviewed,
+        'next_review_due_at' => $nextDue,
+        'review_cycle_months' => $cycleMonths,
+        'reviewed_by_user_id' => $user->id,
+        'updated_by_user_id' => $user->id,
+    ]);
+}
+
+function record_risk_assessment_version_forced(PatientRiskAssessment $assessment, ?User $user, string $changeSummary, bool $alwaysRecord = false): void
+{
+    if (!Schema::hasTable('patient_risk_assessment_versions')) {
+        return;
+    }
+
+    $snapshot = risk_assessment_snapshot_from_model($assessment);
+    $latest = PatientRiskAssessmentVersion::query()
+        ->where('patient_risk_assessment_id', $assessment->id)
+        ->orderByDesc('recorded_at')
+        ->first();
+
+    if (!$alwaysRecord && $latest?->snapshot === $snapshot) {
+        return;
+    }
+
+    PatientRiskAssessmentVersion::query()->create([
+        'patient_risk_assessment_id' => $assessment->id,
+        'patient_id' => $assessment->patient_id,
+        'risk_slug' => $assessment->risk_slug,
+        'snapshot' => $snapshot,
+        'change_summary' => $changeSummary,
+        'recorded_by_user_id' => $user?->id,
+        'recorded_at' => now(),
+    ]);
+}
+
+function build_dashboard_alerts_analysis(Carbon $startOfWeek, Carbon $endOfWeek, Carbon $now, ?User $user = null): array
+{
+    $medResolved = MedicationAdministration::query()
+        ->whereBetween('created_at', [$startOfWeek, $endOfWeek])
+        ->whereIn('status', ['given', 'self_administered'])
+        ->count();
+    $medFlagged = MedicationAdministration::query()
+        ->whereBetween('created_at', [$startOfWeek, $endOfWeek])
+        ->whereIn('status', ['refused', 'omitted', 'delayed'])
+        ->count();
+    $medMissed = MedicationReminder::query()
+        ->whereBetween('due_at', [$startOfWeek, $endOfWeek])
+        ->where('dismissed', false)
+        ->where('due_at', '<', $now)
+        ->count();
+
+    $weekScheduleIds = PatientSchedule::query()
+        ->whereBetween('start_at', [$startOfWeek, $endOfWeek])
+        ->pluck('id');
+
+    $careResolved = ScheduleVisitTask::query()
+        ->whereIn('patient_schedule_id', $weekScheduleIds)
+        ->where('outcome', 'completed')
+        ->count();
+    $careFlagged = ScheduleVisitTask::query()
+        ->whereIn('patient_schedule_id', $weekScheduleIds)
+        ->whereIn('outcome', ['refused', 'unable', 'escalated'])
+        ->count();
+
+    $pastScheduleIds = PatientSchedule::query()
+        ->whereIn('id', $weekScheduleIds)
+        ->where('end_at', '<', $now)
+        ->pluck('id');
+
+    $careMissed = ScheduleVisitTask::query()
+        ->whereIn('patient_schedule_id', $pastScheduleIds)
+        ->whereNull('outcome')
+        ->count();
+
+    $vitals = PatientVital::query()
+        ->whereBetween('recorded_at', [$startOfWeek, $endOfWeek])
+        ->get();
+
+    $obsResolved = 0;
+    $obsFlagged = 0;
+    foreach ($vitals as $vital) {
+        if (!empty(evaluate_vital_threshold_alerts($vital))) {
+            $obsFlagged++;
+        } else {
+            $obsResolved++;
+        }
+    }
+
+    $obsMissed = ScheduleVisitTask::query()
+        ->whereIn('patient_schedule_id', $pastScheduleIds)
+        ->where('task_key', 'observations')
+        ->whereNull('outcome')
+        ->count();
+
+    $rows = [
+        ['key' => 'medications', 'label' => 'Medications', 'resolved' => $medResolved, 'missed' => $medMissed, 'flagged' => $medFlagged],
+        ['key' => 'personal_care', 'label' => 'Personal Care', 'resolved' => $careResolved, 'missed' => $careMissed, 'flagged' => $careFlagged],
+        ['key' => 'observations', 'label' => 'Observations', 'resolved' => $obsResolved, 'missed' => $obsMissed, 'flagged' => $obsFlagged],
+    ];
+
+    return array_map(function (array $row) use ($startOfWeek, $endOfWeek, $user) {
+        return array_merge(
+            [
+                'key' => $row['key'],
+                'label' => $row['label'],
+                'drillDownHref' => alerts_analysis_drill_down_href($row['key'], $startOfWeek, $endOfWeek, $user),
+            ],
+            normalize_alert_analysis_percentages($row['resolved'], $row['missed'], $row['flagged']),
+        );
+    }, $rows);
+}
+
 } // route helper functions (guarded for test / multi-bootstrap)
 
 Route::get('/', function () {
@@ -530,99 +2339,9 @@ Route::get('/dashboard', function () {
         ->where('start_at', '>=', $now)
         ->count();
 
-    $careAlerts = collect();
-
-    $overdueReminders = MedicationReminder::query()
-        ->where('dismissed', false)
-        ->where('due_at', '<', now())
-        ->whereDate('due_at', now()->toDateString())
-        ->with(['patient:id,name,url_key', 'medication:id,name,dose'])
-        ->orderByDesc('due_at')
-        ->limit(4)
-        ->get();
-
-    foreach ($overdueReminders as $reminder) {
-        $patientSlug = $reminder->patient?->url_key;
-        $careAlerts->push([
-            'label' => 'MISSED MEDICATION',
-            'patient' => $reminder->patient?->name ?? 'Unknown',
-            'details' => ($reminder->medication?->name ?? 'Unknown').' '.($reminder->medication?->dose ?? '').', due '.$reminder->due_at->format('H:i'),
-            'action' => 'Resolve',
-            'accent' => 'border-red-400',
-            'panel' => 'bg-red-50',
-            'time' => $reminder->due_at,
-            'href' => $patientSlug ? "/patients/{$patientSlug}/mar/today" : null,
-        ]);
-    }
-
-    $refusedToday = MedicationAdministration::query()
-        ->whereIn('status', ['refused', 'omitted'])
-        ->whereDate('created_at', now()->toDateString())
-        ->with(['patient:id,name,url_key', 'medication:id,name'])
-        ->orderByDesc('created_at')
-        ->limit(4)
-        ->get();
-
-    foreach ($refusedToday as $admin) {
-        $patientSlug = $admin->patient?->url_key;
-        $careAlerts->push([
-            'label' => strtoupper($admin->status).' MEDICATION',
-            'patient' => $admin->patient?->name ?? 'Unknown',
-            'details' => ($admin->medication?->name ?? 'Unknown').($admin->reason ? ' — '.$admin->reason : ''),
-            'action' => 'Review',
-            'accent' => $admin->status === 'refused' ? 'border-amber-400' : 'border-orange-400',
-            'panel' => $admin->status === 'refused' ? 'bg-amber-50' : 'bg-orange-50',
-            'time' => $admin->created_at,
-            'href' => $patientSlug ? "/patients/{$patientSlug}/mar/today" : null,
-        ]);
-    }
-
-    $overdueSchedules = PatientSchedule::query()
-        ->where('end_at', '<', now())
-        ->where(function ($q) {
-            $q->whereNull('status')->orWhere('status', '');
-        })
-        ->with('patient:id,name,url_key')
-        ->orderByDesc('end_at')
-        ->get();
-
-    foreach ($overdueSchedules as $schedule) {
-        $careAlerts->push([
-            'label' => 'MISSED VISIT',
-            'patient' => $schedule->patient?->name ?? 'Unknown',
-            'details' => ($schedule->purpose ?? 'Scheduled visit').' — ended '.$schedule->end_at->format('H:i'),
-            'action' => 'Follow Up',
-            'accent' => 'border-rose-400',
-            'panel' => 'bg-rose-50',
-            'time' => $schedule->end_at,
-            'href' => '/schedules',
-        ]);
-    }
-
-    $redAmberPatients = Patient::query()
-        ->whereIn(DB::raw('LOWER(COALESCE(rag_status, ""))'), ['red', 'amber'])
-        ->orderByRaw("CASE WHEN LOWER(rag_status) = 'red' THEN 0 ELSE 1 END")
-        ->limit(2)
-        ->get(['name', 'rag_status', 'status', 'url_key']);
-
-    foreach ($redAmberPatients as $patient) {
-        $severity = strtolower((string) ($patient->rag_status ?? 'amber'));
-        $isRed = $severity === 'red';
-        $careAlerts->push([
-            'label' => $isRed ? 'HIGH RISK PATIENT' : 'ELEVATED RISK PATIENT',
-            'patient' => $patient->name ?: 'Unknown patient',
-            'details' => $patient->status ? 'Status: '.$patient->status : 'Requires clinical review',
-            'action' => $isRed ? 'Review Now' : 'Review',
-            'accent' => $isRed ? 'border-red-400' : 'border-amber-400',
-            'panel' => $isRed ? 'bg-red-50' : 'bg-amber-50',
-            'time' => now(),
-            'href' => $patient->url_key ? "/patients/{$patient->url_key}" : null,
-        ]);
-    }
-
+    $careAlerts = build_active_care_alerts();
     $totalCareAlerts = $careAlerts->count();
     $alertPatients = $careAlerts
-        ->sortByDesc('time')
         ->take(4)
         ->map(fn ($a) => collect($a)->except('time')->all())
         ->values();
@@ -637,6 +2356,8 @@ Route::get('/dashboard', function () {
             ->map(fn (CareJournalEntry $entry) => map_care_journal_entry($entry))
             ->values()
         : collect();
+
+    $alertsAnalysis = build_dashboard_alerts_analysis($startOfWeek, $endOfWeek, $now, request()->user());
 
     return Inertia::render('Dashboard', [
         'recentJournalEntries' => $recentJournalEntries,
@@ -665,6 +2386,8 @@ Route::get('/dashboard', function () {
             ],
             'careAlerts' => $alertPatients,
             'totalCareAlerts' => $totalCareAlerts,
+            'alertsAnalysis' => $alertsAnalysis,
+            'alertsAnalysisPeriodLabel' => $startOfWeek->format('d M').' – '.$endOfWeek->format('d M Y'),
         ],
     ]);
 })->middleware(['auth', 'verified'])->name('dashboard');
@@ -795,35 +2518,232 @@ Route::get('/analytics', function () {
 })->middleware(['auth', 'verified'])->name('analytics');
 
 Route::get('/care-alerts', function () {
+    $allAlerts = build_active_care_alerts(includeAllMedicationAlerts: true)
+        ->map(fn ($a) => collect($a)->except('time')->all())
+        ->values();
+
+    return Inertia::render('CareAlerts', ['alerts' => $allAlerts]);
+})->middleware(['auth', 'verified'])->name('care-alerts');
+
+if (!function_exists('normalize_patient_allergy_details')) {
+function normalize_patient_allergy_details(?string $severeAllergies, ?array $structured = null): array
+{
+    if (is_array($structured) && !empty($structured)) {
+        return collect($structured)
+            ->map(function ($row) {
+                if (!is_array($row)) {
+                    return null;
+                }
+                $allergen = trim((string) ($row['allergen'] ?? ''));
+                if ($allergen === '') {
+                    return null;
+                }
+
+                return [
+                    'allergen' => $allergen,
+                    'reaction' => trim((string) ($row['reaction'] ?? '')) ?: null,
+                    'severity' => trim((string) ($row['severity'] ?? '')) ?: null,
+                    'verified_at' => trim((string) ($row['verified_at'] ?? '')) ?: null,
+                ];
+            })
+            ->filter()
+            ->values()
+            ->all();
+    }
+
+    $text = trim((string) $severeAllergies);
+    if ($text === '') {
+        return [];
+    }
+
+    return collect(preg_split('/[,;]+/', $text) ?: [])
+        ->map(fn ($part) => trim((string) $part))
+        ->filter(fn ($part) => $part !== '' && strtolower($part) !== 'none')
+        ->map(fn ($allergen) => [
+            'allergen' => $allergen,
+            'reaction' => null,
+            'severity' => null,
+            'verified_at' => null,
+        ])
+        ->values()
+        ->all();
+}
+
+function map_patient_profile_payload(Patient $patient): array
+{
+    $allergyDetails = is_array($patient->allergy_details) ? $patient->allergy_details : [];
+    $legacyAllergies = is_array($patient->allergies) ? array_values(array_filter($patient->allergies)) : [];
+
+    return [
+        'name' => $patient->name,
+        'preferredName' => $patient->preferred_name,
+        'nhsNumber' => $patient->nhs_number,
+        'dob' => $patient->dob,
+        'address' => $patient->address,
+        'phone' => $patient->phone,
+        'status' => $patient->status,
+        'ragStatus' => $patient->rag_status,
+        'staffingRatio' => $patient->staffing_ratio,
+        'primaryDiagnosis' => $patient->primary_diagnosis,
+        'gpName' => $patient->gp_name,
+        'gpPractice' => $patient->gp_practice,
+        'gpPhone' => $patient->gp_phone,
+        'primaryLanguage' => $patient->primary_language,
+        'interpreterRequired' => (bool) $patient->interpreter_required,
+        'capacityStatus' => $patient->capacity_status,
+        'bestInterestDecision' => $patient->best_interest_decision,
+        'informationSharingConsent' => $patient->information_sharing_consent,
+        'dolsLpsStatus' => $patient->dols_lps_status,
+        'dnacprStatus' => $patient->dnacpr_status,
+        'allergies' => $legacyAllergies,
+        'allergyDetails' => $allergyDetails,
+        'mobilityAids' => $patient->mobility_aids,
+        'hoistType' => $patient->hoist_type,
+        'slingSize' => $patient->sling_size,
+        'equipmentNotes' => $patient->equipment_notes,
+        'environmentalNotes' => $patient->environmental_notes,
+        'nextOfKin' => $patient->next_of_kin,
+        'nextOfKinTel' => $patient->next_of_kin_tel,
+        'nextOfKinEmail' => $patient->next_of_kin_email,
+        'otherRelevantPeople' => $patient->other_relevant_people,
+        'socialServicesNumber' => $patient->social_services_number,
+        'socialWorkerName' => $patient->social_worker_name,
+        'socialWorkerContact' => $patient->social_worker_contact,
+        'commissionerName' => $patient->commissioner_name,
+        'commissionerContact' => $patient->commissioner_contact,
+        'emergencyContactName' => $patient->emergency_contact_name,
+        'emergencyContactPhone' => $patient->emergency_contact_phone,
+        'photoUrl' => $patient->photo_path ? route('patients.photo', ['patientRecord' => $patient->id]) : null,
+        'updatedAt' => optional($patient->updated_at)->format('d M Y H:i'),
+    ];
+}
+
+function evaluate_vital_threshold_alerts(PatientVital $vital): array
+{
+    $alerts = [];
+
+    if ($vital->spo2 !== null) {
+        if ($vital->spo2 < 90) {
+            $alerts[] = 'Critical SpO₂: '.$vital->spo2.'%';
+        } elseif ($vital->spo2 < 94) {
+            $alerts[] = 'Low SpO₂: '.$vital->spo2.'%';
+        }
+    }
+
+    if ($vital->bp_systolic !== null && ($vital->bp_systolic > 180 || $vital->bp_systolic < 90)) {
+        $alerts[] = 'BP systolic out of range: '.$vital->bp_systolic.' mmHg';
+    }
+
+    if ($vital->heart_rate !== null && ($vital->heart_rate > 100 || $vital->heart_rate < 50)) {
+        $alerts[] = 'Heart rate out of range: '.$vital->heart_rate.' bpm';
+    }
+
+    if ($vital->temperature_celsius !== null) {
+        $temp = (float) $vital->temperature_celsius;
+        if ($temp > 38.0 || $temp < 35.0) {
+            $alerts[] = 'Temperature out of range: '.$temp.' °C';
+        }
+    }
+
+    if ($vital->blood_glucose_mmol !== null) {
+        $glucose = (float) $vital->blood_glucose_mmol;
+        if ($glucose > 11.0 || $glucose < 4.0) {
+            $alerts[] = 'Blood glucose out of range: '.$glucose.' mmol/L';
+        }
+    }
+
+    if ($vital->pain_score !== null && $vital->pain_score >= 7) {
+        $alerts[] = 'High pain score: '.$vital->pain_score.'/10';
+    }
+
+    return $alerts;
+}
+
+function append_vital_threshold_care_alerts($careAlerts, int $limit = 4): void
+{
+    $added = 0;
+    $recentVitals = PatientVital::query()
+        ->where('recorded_at', '>=', now()->subDay())
+        ->with('patient:id,name,url_key')
+        ->orderByDesc('recorded_at')
+        ->limit(30)
+        ->get();
+
+    foreach ($recentVitals as $vital) {
+        $thresholdAlerts = evaluate_vital_threshold_alerts($vital);
+        if (empty($thresholdAlerts)) {
+            continue;
+        }
+
+        $patientSlug = $vital->patient?->url_key;
+        $isCritical = collect($thresholdAlerts)->contains(
+            fn ($message) => str_contains(strtolower($message), 'critical')
+        );
+
+        $careAlerts->push([
+            'label' => 'OBSERVATION ALERT',
+            'patient' => $vital->patient?->name ?? 'Unknown',
+            'details' => implode('; ', array_slice($thresholdAlerts, 0, 2)),
+            'action' => 'Review',
+            'accent' => $isCritical ? 'border-red-400' : 'border-amber-400',
+            'panel' => $isCritical ? 'bg-red-50' : 'bg-amber-50',
+            'time' => $vital->recorded_at ?? $vital->created_at,
+            'patientUrlKey' => $patientSlug,
+            'href' => $patientSlug ? route('patients.observations', $patientSlug) : null,
+        ]);
+
+        $added++;
+        if ($added >= $limit) {
+            break;
+        }
+    }
+}
+
+function build_active_care_alerts(bool $includeAllMedicationAlerts = false): \Illuminate\Support\Collection
+{
     $careAlerts = collect();
 
-    $overdueReminders = MedicationReminder::query()
+    $overdueRemindersQuery = MedicationReminder::query()
         ->where('dismissed', false)
         ->where('due_at', '<', now())
+        ->whereDate('due_at', now()->toDateString())
         ->with(['patient:id,name,url_key', 'medication:id,name,dose'])
-        ->orderByDesc('due_at')
-        ->get();
+        ->orderByDesc('due_at');
+
+    if (!$includeAllMedicationAlerts) {
+        $overdueRemindersQuery->limit(4);
+    }
+
+    $overdueReminders = $overdueRemindersQuery->get();
 
     foreach ($overdueReminders as $reminder) {
         $patientSlug = $reminder->patient?->url_key;
         $careAlerts->push([
             'label' => 'MISSED MEDICATION',
             'patient' => $reminder->patient?->name ?? 'Unknown',
-            'details' => ($reminder->medication?->name ?? 'Unknown').' '.($reminder->medication?->dose ?? '').', due '.$reminder->due_at->format('H:i d M'),
+            'details' => ($reminder->medication?->name ?? 'Unknown').' '.($reminder->medication?->dose ?? '').', due '.$reminder->due_at->format(
+                $includeAllMedicationAlerts ? 'H:i d M' : 'H:i'
+            ),
             'action' => 'Resolve',
             'accent' => 'border-red-400',
             'panel' => 'bg-red-50',
             'time' => $reminder->due_at,
-            'href' => $patientSlug ? "/patients/{$patientSlug}/mar/today" : null,
+            'patientUrlKey' => $patientSlug,
+            'href' => $patientSlug ? route('patients.mar.show', ['patient' => $patientSlug, 'mar' => 'today-mar']) : null,
         ]);
     }
 
-    $refusedToday = MedicationAdministration::query()
-        ->whereIn('status', ['refused', 'omitted'])
+    $refusedTodayQuery = MedicationAdministration::query()
+        ->whereIn('status', ['refused', 'omitted', 'delayed'])
         ->whereDate('created_at', now()->toDateString())
         ->with(['patient:id,name,url_key', 'medication:id,name'])
-        ->orderByDesc('created_at')
-        ->get();
+        ->orderByDesc('created_at');
+
+    if (!$includeAllMedicationAlerts) {
+        $refusedTodayQuery->limit(4);
+    }
+
+    $refusedToday = $refusedTodayQuery->get();
 
     foreach ($refusedToday as $admin) {
         $patientSlug = $admin->patient?->url_key;
@@ -835,9 +2755,18 @@ Route::get('/care-alerts', function () {
             'accent' => $admin->status === 'refused' ? 'border-amber-400' : 'border-orange-400',
             'panel' => $admin->status === 'refused' ? 'bg-amber-50' : 'bg-orange-50',
             'time' => $admin->created_at,
-            'href' => $patientSlug ? "/patients/{$patientSlug}/mar/today" : null,
+            'patientUrlKey' => $patientSlug,
+            'href' => $patientSlug ? route('patients.mar.show', ['patient' => $patientSlug, 'mar' => 'today-mar']) : null,
         ]);
     }
+
+    append_vital_threshold_care_alerts($careAlerts);
+    append_wound_escalation_care_alerts($careAlerts);
+    append_wound_review_care_alerts($careAlerts);
+    append_risk_review_care_alerts($careAlerts);
+    append_incident_investigation_care_alerts($careAlerts);
+    append_data_retention_care_alerts($careAlerts);
+    append_privacy_breach_care_alerts($careAlerts);
 
     $overdueSchedules = PatientSchedule::query()
         ->where('end_at', '<', now())
@@ -849,22 +2778,33 @@ Route::get('/care-alerts', function () {
         ->get();
 
     foreach ($overdueSchedules as $schedule) {
+        $patientSlug = $schedule->patient?->url_key;
         $careAlerts->push([
             'label' => 'MISSED VISIT',
             'patient' => $schedule->patient?->name ?? 'Unknown',
-            'details' => ($schedule->purpose ?? 'Scheduled visit').' — ended '.$schedule->end_at->format('H:i d M'),
+            'details' => ($schedule->purpose ?? 'Scheduled visit').' — ended '.$schedule->end_at->format(
+                $includeAllMedicationAlerts ? 'H:i d M' : 'H:i'
+            ),
             'action' => 'Follow Up',
             'accent' => 'border-rose-400',
             'panel' => 'bg-rose-50',
             'time' => $schedule->end_at,
-            'href' => '/schedules',
+            'patientUrlKey' => $patientSlug,
+            'href' => $patientSlug
+                ? route('patients.handovers', $patientSlug)
+                : route('schedules'),
         ]);
     }
 
-    $redAmberPatients = Patient::query()
+    $redAmberQuery = Patient::query()
         ->whereIn(DB::raw('LOWER(COALESCE(rag_status, ""))'), ['red', 'amber'])
-        ->orderByRaw("CASE WHEN LOWER(rag_status) = 'red' THEN 0 ELSE 1 END")
-        ->get(['name', 'rag_status', 'status', 'url_key']);
+        ->orderByRaw("CASE WHEN LOWER(rag_status) = 'red' THEN 0 ELSE 1 END");
+
+    if (!$includeAllMedicationAlerts) {
+        $redAmberQuery->limit(2);
+    }
+
+    $redAmberPatients = $redAmberQuery->get(['name', 'rag_status', 'status', 'url_key']);
 
     foreach ($redAmberPatients as $patient) {
         $severity = strtolower((string) ($patient->rag_status ?? 'amber'));
@@ -877,17 +2817,156 @@ Route::get('/care-alerts', function () {
             'accent' => $isRed ? 'border-red-400' : 'border-amber-400',
             'panel' => $isRed ? 'bg-red-50' : 'bg-amber-50',
             'time' => now(),
-            'href' => $patient->url_key ? "/patients/{$patient->url_key}" : null,
+            'patientUrlKey' => $patient->url_key,
+            'href' => $patient->url_key ? route('patients.show', $patient->url_key) : null,
         ]);
     }
 
-    $allAlerts = $careAlerts
-        ->sortByDesc('time')
-        ->map(fn ($a) => collect($a)->except('time')->all())
-        ->values();
+    return $careAlerts->sortByDesc('time')->values();
+}
 
-    return Inertia::render('CareAlerts', ['alerts' => $allAlerts]);
-})->middleware(['auth', 'verified'])->name('care-alerts');
+function build_patient_profile_alert_messages(Patient $patient): array
+{
+    $messages = [];
+
+    $overdueReminders = MedicationReminder::query()
+        ->where('patient_id', $patient->id)
+        ->where('dismissed', false)
+        ->where('due_at', '<', now())
+        ->whereDate('due_at', now()->toDateString())
+        ->with('medication:id,name,dose')
+        ->orderByDesc('due_at')
+        ->limit(5)
+        ->get();
+
+    foreach ($overdueReminders as $reminder) {
+        $messages[] = 'Overdue medication: '.($reminder->medication?->name ?? 'Unknown')
+            .' (due '.$reminder->due_at->format('H:i').').';
+    }
+
+    $refusedToday = MedicationAdministration::query()
+        ->where('patient_id', $patient->id)
+        ->whereIn('status', ['refused', 'omitted', 'delayed'])
+        ->whereDate('created_at', now()->toDateString())
+        ->with('medication:id,name')
+        ->orderByDesc('created_at')
+        ->limit(3)
+        ->get();
+
+    foreach ($refusedToday as $admin) {
+        $label = ucfirst((string) $admin->status);
+        $messages[] = "{$label} medication today: ".($admin->medication?->name ?? 'Unknown')
+            .($admin->reason ? ' — '.$admin->reason : '');
+    }
+
+    $missedVisits = PatientSchedule::query()
+        ->where('patient_id', $patient->id)
+        ->where('end_at', '<', now())
+        ->where(function ($q) {
+            $q->whereNull('status')->orWhere('status', '');
+        })
+        ->orderByDesc('end_at')
+        ->limit(2)
+        ->get();
+
+    foreach ($missedVisits as $schedule) {
+        $messages[] = 'Missed visit window ended '.$schedule->end_at->format('d M H:i').'.';
+    }
+
+    if (in_array(strtolower((string) $patient->rag_status), ['red', 'amber'], true)) {
+        $messages[] = 'RAG status is '.strtoupper((string) $patient->rag_status).' — review care plan and staffing.';
+    }
+
+    $latestVital = PatientVital::query()
+        ->where('patient_id', $patient->id)
+        ->orderByDesc('recorded_at')
+        ->orderByDesc('id')
+        ->first();
+
+    if ($latestVital) {
+        foreach (evaluate_vital_threshold_alerts($latestVital) as $alert) {
+            $messages[] = $alert;
+        }
+    }
+
+    if (Schema::hasTable('patient_wound_assessments')) {
+        $latestWound = PatientWoundAssessment::query()
+            ->where('patient_id', $patient->id)
+            ->orderByDesc('recorded_at')
+            ->orderByDesc('id')
+            ->first();
+
+        if ($latestWound) {
+            foreach (evaluate_wound_assessment_alerts($latestWound) as $alert) {
+                $messages[] = $alert;
+            }
+        }
+    }
+
+    if (Schema::hasTable('patient_fluid_records')) {
+        foreach (evaluate_fluid_balance_alerts($patient) as $alert) {
+            $messages[] = $alert;
+        }
+    }
+
+    return array_values(array_unique($messages));
+}
+
+function mar_status_abbreviation(?string $status): string
+{
+    return match (strtolower((string) $status)) {
+        'given' => 'G',
+        'delayed' => 'D',
+        'refused' => 'R',
+        'omitted' => 'O',
+        'self_administered' => 'S',
+        default => '—',
+    };
+}
+
+function build_patient_mar_chart_rows(Patient $patient, Carbon $month): array
+{
+    $monthStart = $month->copy()->startOfMonth()->startOfDay();
+    $monthEnd = $month->copy()->endOfMonth()->endOfDay();
+    $daysInMonth = $month->daysInMonth;
+
+    $medications = PatientMedication::query()
+        ->where('patient_id', $patient->id)
+        ->where('active', true)
+        ->orderBy('scheduled_time')
+        ->orderBy('name')
+        ->get();
+
+    $administrations = MedicationAdministration::query()
+        ->where('patient_id', $patient->id)
+        ->whereBetween('created_at', [$monthStart, $monthEnd])
+        ->orderByDesc('id')
+        ->get()
+        ->groupBy(fn ($row) => $row->patient_medication_id.'|'.$row->created_at->format('Y-m-d'));
+
+    return $medications->map(function ($medication) use ($daysInMonth, $month, $administrations) {
+        $cells = [];
+        for ($day = 1; $day <= $daysInMonth; $day++) {
+            $dateKey = $month->copy()->day($day)->format('Y-m-d');
+            $bucketKey = $medication->id.'|'.$dateKey;
+            $status = $administrations->get($bucketKey)?->first()?->status;
+            $cells[] = mar_status_abbreviation($status);
+        }
+
+        $timeLabel = '';
+        if (!empty($medication->scheduled_time)) {
+            $timeLabel = Carbon::createFromFormat('H:i:s', (string) $medication->scheduled_time)->format('H:i');
+        }
+
+        return [
+            'name' => $medication->name,
+            'dose' => $medication->dose,
+            'time' => $timeLabel,
+            'cells' => $cells,
+        ];
+    })->values()->all();
+}
+} // patient profile helpers
 
 if (!function_exists('format_care_journal_author_name')) {
 function format_care_journal_author_name(?User $user): string
@@ -931,8 +3010,14 @@ function map_patient_vital(PatientVital $vital): array
         'id' => $vital->id,
         'heartRate' => $vital->heart_rate,
         'bpSystolic' => $vital->bp_systolic,
+        'bpDiastolic' => $vital->bp_diastolic,
         'spo2' => $vital->spo2,
+        'temperatureCelsius' => $vital->temperature_celsius !== null ? (float) $vital->temperature_celsius : null,
+        'bloodGlucoseMmol' => $vital->blood_glucose_mmol !== null ? (float) $vital->blood_glucose_mmol : null,
+        'weightKg' => $vital->weight_kg !== null ? (float) $vital->weight_kg : null,
+        'painScore' => $vital->pain_score,
         'otherObservation' => $vital->other_observation,
+        'thresholdAlerts' => evaluate_vital_threshold_alerts($vital),
         'recordedAt' => $vital->recorded_at?->toIso8601String(),
         'recordedAtLabel' => $vital->recorded_at?->format('d M Y, H:i'),
         'recordedBy' => [
@@ -1118,6 +3203,8 @@ Route::post('/schedules', function () {
         'created_by_user_id' => request()->user()?->id,
     ]);
 
+    seed_schedule_visit_tasks($schedule);
+
     AuditTrail::record(
         'created',
         'Scheduled visit for '.$patient->name,
@@ -1247,6 +3334,429 @@ Route::get('/reports', function () {
     ]);
 })->middleware(['auth', 'verified', 'role:super_admin,admin,care_manager,supervisor'])->name('reports');
 
+Route::get('/reports/gdpr', function () {
+    abort_unless(AuditTrail::canManagePrivacyRequests(request()->user()), 403);
+
+    $requests = PrivacyRequest::query()
+        ->with(['patient:id,name,url_key', 'requestedBy:id,name,first_name,surname', 'handledBy:id,name,first_name,surname', 'erasureJob'])
+        ->orderByDesc('created_at')
+        ->limit(200)
+        ->get()
+        ->map(fn (PrivacyRequest $row) => map_privacy_request($row))
+        ->values();
+
+    $patients = Patient::query()
+        ->orderBy('name')
+        ->get(['id', 'name', 'url_key'])
+        ->map(fn ($p) => ['id' => $p->id, 'name' => $p->name, 'urlKey' => $p->url_key])
+        ->values();
+
+    $retentionSchedules = Schema::hasTable('data_retention_schedules')
+        ? DataRetentionSchedule::query()->orderBy('data_category')->get()
+            ->map(fn (DataRetentionSchedule $row) => map_data_retention_schedule($row))
+            ->values()
+        : collect();
+
+    $privacyNotices = Schema::hasTable('privacy_notices')
+        ? PrivacyNotice::query()->orderByDesc('published_at')->orderByDesc('id')->limit(50)->get()
+            ->map(fn (PrivacyNotice $row) => map_privacy_notice($row))
+            ->values()
+        : collect();
+
+    return Inertia::render('ReportsGdpr', [
+        'requests' => $requests,
+        'patients' => $patients,
+        'statusOptions' => PrivacyRequest::STATUSES,
+        'typeOptions' => collect(PrivacyRequest::TYPES)
+            ->map(fn (string $type) => ['value' => $type, 'label' => privacy_request_type_label($type)])
+            ->values(),
+        'retentionSchedules' => $retentionSchedules,
+        'privacyNotices' => $privacyNotices,
+    ]);
+})->middleware(['auth', 'verified', 'role:super_admin,admin,care_manager,supervisor'])->name('reports.gdpr');
+
+Route::post('/reports/gdpr', function (Request $request) {
+    abort_unless(AuditTrail::canManagePrivacyRequests($request->user()), 403);
+
+    $validated = $request->validate([
+        'request_type' => ['required', 'string', 'in:'.implode(',', PrivacyRequest::TYPES)],
+        'patient_id' => ['nullable', 'integer', 'exists:patients,id'],
+        'subject_name' => ['nullable', 'string', 'max:255'],
+        'subject_email' => ['nullable', 'email', 'max:255'],
+        'request_details' => ['required', 'string', 'min:10', 'max:10000'],
+        'discovered_at' => ['nullable', 'date'],
+        'ico_notification_required' => ['nullable', 'boolean'],
+        'individuals_affected_count' => ['nullable', 'integer', 'min:0', 'max:1000000'],
+        'breach_categories' => ['nullable', 'string', 'max:255'],
+    ]);
+
+    $patient = isset($validated['patient_id'])
+        ? Patient::query()->find($validated['patient_id'])
+        : null;
+
+    if (!$patient && trim((string) ($validated['subject_name'] ?? '')) === '' && $validated['request_type'] !== PrivacyRequest::TYPE_DATA_BREACH) {
+        throw ValidationException::withMessages([
+            'subject_name' => 'Link a patient or enter the data subject name.',
+        ]);
+    }
+
+    $discoveredAt = isset($validated['discovered_at'])
+        ? Carbon::parse((string) $validated['discovered_at'])
+        : null;
+
+    if ($validated['request_type'] === PrivacyRequest::TYPE_DATA_BREACH) {
+        $discoveredAt = $discoveredAt ?? now();
+        $dueAt = $discoveredAt->copy()->addHours(72)->toDateString();
+        $icoRequired = array_key_exists('ico_notification_required', $validated)
+            ? (bool) $validated['ico_notification_required']
+            : true;
+    } else {
+        $dueAt = now()->addDays(30)->toDateString();
+        $icoRequired = false;
+        $discoveredAt = null;
+    }
+
+    $privacyRequest = PrivacyRequest::query()->create([
+        'request_type' => $validated['request_type'],
+        'status' => 'pending',
+        'patient_id' => $patient?->id,
+        'subject_name' => $patient?->name ?? trim((string) ($validated['subject_name'] ?? '')) ?: 'Data breach incident',
+        'subject_email' => trim((string) ($validated['subject_email'] ?? '')) ?: null,
+        'request_details' => trim($validated['request_details']),
+        'requested_by_user_id' => $request->user()->id,
+        'due_at' => $dueAt,
+        'discovered_at' => $discoveredAt,
+        'ico_notification_required' => $icoRequired,
+        'individuals_affected_count' => $validated['individuals_affected_count'] ?? null,
+        'breach_categories' => trim((string) ($validated['breach_categories'] ?? '')) ?: null,
+    ]);
+
+    $typeLabel = match ($validated['request_type']) {
+        PrivacyRequest::TYPE_ERASURE => 'Erasure',
+        PrivacyRequest::TYPE_DATA_BREACH => 'Data breach',
+        default => 'SAR',
+    };
+    AuditTrail::record(
+        'created',
+        "Opened {$typeLabel} privacy request for ".($privacyRequest->subject_name ?? 'data subject'),
+        'privacy_request',
+        (string) $privacyRequest->id,
+        $privacyRequest->subject_name,
+        ['request_type' => $validated['request_type'], 'due_at' => $privacyRequest->due_at?->toDateString()],
+        ['patient_url_key' => $patient?->url_key],
+        $request,
+    );
+
+    return redirect()->route('reports.gdpr')->with('success', 'Privacy request logged.');
+})->middleware(['auth', 'verified', 'role:super_admin,admin,care_manager,supervisor'])->name('reports.gdpr.store');
+
+Route::patch('/reports/gdpr/{privacyRequest}', function (PrivacyRequest $privacyRequest, Request $request) {
+    abort_unless(AuditTrail::canManagePrivacyRequests($request->user()), 403);
+
+    $validated = $request->validate([
+        'status' => ['required', 'string', 'in:'.implode(',', PrivacyRequest::STATUSES)],
+        'outcome_notes' => ['nullable', 'string', 'max:10000'],
+        'ico_notified_at' => ['nullable', 'date'],
+        'ico_notification_required' => ['nullable', 'boolean'],
+        'individuals_affected_count' => ['nullable', 'integer', 'min:0', 'max:1000000'],
+        'breach_categories' => ['nullable', 'string', 'max:255'],
+    ]);
+
+    $previousStatus = $privacyRequest->status;
+    $updates = [
+        'status' => $validated['status'],
+        'outcome_notes' => trim((string) ($validated['outcome_notes'] ?? '')) ?: $privacyRequest->outcome_notes,
+        'handled_by_user_id' => $request->user()->id,
+        'completed_at' => in_array($validated['status'], ['completed', 'rejected'], true) ? now() : null,
+    ];
+
+    if ($privacyRequest->request_type === PrivacyRequest::TYPE_DATA_BREACH) {
+        if (array_key_exists('ico_notification_required', $validated)) {
+            $updates['ico_notification_required'] = (bool) $validated['ico_notification_required'];
+        }
+        if (array_key_exists('ico_notified_at', $validated) && $validated['ico_notified_at']) {
+            $updates['ico_notified_at'] = Carbon::parse((string) $validated['ico_notified_at']);
+        }
+        if (array_key_exists('individuals_affected_count', $validated)) {
+            $updates['individuals_affected_count'] = $validated['individuals_affected_count'];
+        }
+        if (array_key_exists('breach_categories', $validated)) {
+            $updates['breach_categories'] = trim((string) $validated['breach_categories']) ?: null;
+        }
+    }
+
+    $privacyRequest->update($updates);
+
+    if (
+        $validated['status'] === 'completed'
+        && $privacyRequest->request_type === PrivacyRequest::TYPE_ERASURE
+        && $privacyRequest->patient_id
+    ) {
+        $job = queue_privacy_erasure_job($privacyRequest->fresh());
+        process_privacy_erasure_job($job);
+    }
+
+    AuditTrail::record(
+        'updated',
+        'Updated privacy request #'.$privacyRequest->id.' status to '.$validated['status'],
+        'privacy_request',
+        (string) $privacyRequest->id,
+        $privacyRequest->subject_name,
+        ['from' => $previousStatus, 'to' => $validated['status']],
+        ['patient_url_key' => $privacyRequest->patient?->url_key],
+        $request,
+    );
+
+    return redirect()->route('reports.gdpr')->with('success', 'Privacy request updated.');
+})->middleware(['auth', 'verified', 'role:super_admin,admin,care_manager,supervisor'])->name('reports.gdpr.update');
+
+Route::get('/reports/gdpr/{privacyRequest}/sar-export', function (PrivacyRequest $privacyRequest) {
+    abort_unless(AuditTrail::canManagePrivacyRequests(request()->user()), 403);
+
+    if ($privacyRequest->request_type !== PrivacyRequest::TYPE_SUBJECT_ACCESS) {
+        abort(404);
+    }
+
+    $patient = $privacyRequest->patient;
+    if (!$patient) {
+        return redirect()->route('reports.gdpr')->withErrors([
+            'export' => 'Link a patient to this SAR before exporting.',
+        ]);
+    }
+
+    $export = build_subject_access_export($patient);
+    $filename = 'sar-'.$patient->url_key.'-'.now()->format('Y-m-d').'.json';
+
+    AuditTrail::record(
+        'exported',
+        'Exported SAR data pack for '.$patient->name,
+        'privacy_request',
+        (string) $privacyRequest->id,
+        $patient->name,
+        null,
+        ['patient_url_key' => $patient->url_key, 'filename' => $filename],
+        request(),
+    );
+
+    return response()->json($export, 200, [
+        'Content-Disposition' => 'attachment; filename="'.$filename.'"',
+    ], JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE);
+})->middleware(['auth', 'verified', 'role:super_admin,admin,care_manager,supervisor'])->name('reports.gdpr.sar-export');
+
+Route::get('/reports/gdpr/{privacyRequest}/sar-export.pdf', function (PrivacyRequest $privacyRequest) {
+    abort_unless(AuditTrail::canManagePrivacyRequests(request()->user()), 403);
+
+    if ($privacyRequest->request_type !== PrivacyRequest::TYPE_SUBJECT_ACCESS) {
+        abort(404);
+    }
+
+    $patient = $privacyRequest->patient;
+    if (!$patient) {
+        return redirect()->route('reports.gdpr')->withErrors([
+            'export' => 'Link a patient to this SAR before exporting.',
+        ]);
+    }
+
+    $pdf = \Barryvdh\DomPDF\Facade\Pdf::loadView(
+        'reports.sar-export-pdf',
+        prepare_sar_pdf_view_data($patient, $privacyRequest)
+    )->setPaper('a4', 'portrait');
+
+    $filename = 'AlloCare-SAR-'.Str::slug($patient->name).'-'.now()->format('Y-m-d').'.pdf';
+
+    AuditTrail::record(
+        'exported',
+        'Exported SAR PDF for '.$patient->name,
+        'privacy_request',
+        (string) $privacyRequest->id,
+        $patient->name,
+        null,
+        ['patient_url_key' => $patient->url_key, 'filename' => $filename],
+        request(),
+    );
+
+    return $pdf->download($filename);
+})->middleware(['auth', 'verified', 'role:super_admin,admin,care_manager,supervisor'])->name('reports.gdpr.sar-export.pdf');
+
+Route::post('/reports/gdpr/retention', function (Request $request) {
+    abort_unless(AuditTrail::canManagePrivacyRequests($request->user()), 403);
+
+    $validated = $request->validate([
+        'data_category' => ['required', 'string', 'max:128'],
+        'retention_period' => ['required', 'string', 'max:128'],
+        'legal_basis' => ['nullable', 'string', 'max:255'],
+        'review_cycle_months' => ['nullable', 'integer', 'min:1', 'max:120'],
+        'last_reviewed_at' => ['nullable', 'date'],
+        'notes' => ['nullable', 'string', 'max:5000'],
+    ]);
+
+    DataRetentionSchedule::query()->create([
+        'data_category' => trim($validated['data_category']),
+        'retention_period' => trim($validated['retention_period']),
+        'legal_basis' => trim((string) ($validated['legal_basis'] ?? '')) ?: null,
+        'review_cycle_months' => $validated['review_cycle_months'] ?? 12,
+        'last_reviewed_at' => $validated['last_reviewed_at'] ?? now()->toDateString(),
+        'notes' => trim((string) ($validated['notes'] ?? '')) ?: null,
+        'updated_by_user_id' => $request->user()->id,
+    ]);
+
+    return redirect()->route('reports.gdpr')->with('success', 'Retention schedule added.');
+})->middleware(['auth', 'verified', 'role:super_admin,admin,care_manager,supervisor'])->name('reports.gdpr.retention.store');
+
+Route::post('/reports/gdpr/privacy-notices', function (Request $request) {
+    abort_unless(AuditTrail::canManagePrivacyRequests($request->user()), 403);
+
+    $validated = $request->validate([
+        'title' => ['required', 'string', 'max:255'],
+        'version' => ['required', 'string', 'max:32'],
+        'summary' => ['nullable', 'string', 'max:2000'],
+        'content' => ['required', 'string', 'min:20', 'max:50000'],
+        'published_at' => ['nullable', 'date'],
+        'is_active' => ['nullable', 'boolean'],
+    ]);
+
+    if ($request->boolean('is_active', true)) {
+        PrivacyNotice::query()->where('is_active', true)->update(['is_active' => false]);
+    }
+
+    PrivacyNotice::query()->create([
+        'title' => trim($validated['title']),
+        'version' => trim($validated['version']),
+        'summary' => trim((string) ($validated['summary'] ?? '')) ?: null,
+        'content' => trim($validated['content']),
+        'published_at' => $validated['published_at'] ?? now()->toDateString(),
+        'is_active' => $request->boolean('is_active', true),
+        'published_by_user_id' => $request->user()->id,
+    ]);
+
+    return redirect()->route('reports.gdpr')->with('success', 'Privacy notice published.');
+})->middleware(['auth', 'verified', 'role:super_admin,admin,care_manager,supervisor'])->name('reports.gdpr.privacy-notices.store');
+
+Route::post('/reports/gdpr/retention/{schedule}/reviewed', function (Request $request, DataRetentionSchedule $schedule) {
+    abort_unless(AuditTrail::canManagePrivacyRequests($request->user()), 403);
+
+    $schedule->update([
+        'last_reviewed_at' => now()->toDateString(),
+        'updated_by_user_id' => $request->user()->id,
+    ]);
+
+    return redirect()->route('reports.gdpr')->with('success', 'Retention schedule marked as reviewed.');
+})->middleware(['auth', 'verified', 'role:super_admin,admin,care_manager,supervisor'])->name('reports.gdpr.retention.reviewed');
+
+Route::post('/reports/gdpr/erasure-jobs/{job}/retry', function (Request $request, PrivacyErasureJob $job) {
+    abort_unless(AuditTrail::canManagePrivacyRequests($request->user()), 403);
+
+    abort_unless($job->status === PrivacyErasureJob::STATUS_FAILED, 422);
+
+    $job->update([
+        'status' => PrivacyErasureJob::STATUS_PENDING,
+        'scheduled_at' => now(),
+        'error_message' => null,
+    ]);
+
+    process_privacy_erasure_job($job->fresh());
+
+    return redirect()->route('reports.gdpr')->with('success', 'Erasure job reprocessed.');
+})->middleware(['auth', 'verified', 'role:super_admin,admin,care_manager,supervisor'])->name('reports.gdpr.erasure-jobs.retry');
+
+Route::get('/reports/staff-performance', function () {
+    abort_unless(AuditTrail::canViewReports(request()->user()), 403);
+
+    $fromParam = request('from');
+    $toParam = request('to');
+    $from = $fromParam ? Carbon::parse($fromParam)->startOfDay() : now()->subDays(30)->startOfDay();
+    $to = $toParam ? Carbon::parse($toParam)->endOfDay() : now()->endOfDay();
+
+    $schedules = PatientSchedule::query()
+        ->whereBetween('start_at', [$from, $to])
+        ->with('assignedUser:id,name,first_name,surname')
+        ->get();
+
+    $byStaff = $schedules
+        ->groupBy(fn (PatientSchedule $s) => $s->assigned_user_id ?? 0)
+        ->map(function ($group, $userId) {
+            $user = $group->first()->assignedUser;
+            $name = $user
+                ? trim((string) ($user->name ?: (($user->first_name ?? '').' '.($user->surname ?? ''))))
+                : 'Unassigned';
+            $total = $group->count();
+            $completed = $group->where('status', 'completed')->count();
+            $missed = $group->where('status', 'missed')->count();
+            $late = $group->sum(fn ($s) => (int) ($s->late_by_minutes ?? 0));
+            $hours = $group->sum(fn ($s) => ($s->start_at && $s->end_at) ? $s->start_at->diffInMinutes($s->end_at) / 60 : 0);
+
+            return [
+                'staffId' => $userId ?: null,
+                'staffName' => $name !== '' ? $name : 'Unassigned',
+                'totalShifts' => $total,
+                'completedShifts' => $completed,
+                'missedShifts' => $missed,
+                'completionRate' => $total > 0 ? round(($completed / $total) * 100, 1) : 0,
+                'lateMinutesTotal' => $late,
+                'hoursAllocated' => round($hours, 1),
+            ];
+        })
+        ->sortByDesc('totalShifts')
+        ->values();
+
+    return Inertia::render('ReportsStaffPerformance', [
+        'byStaff' => $byStaff,
+        'stats' => [
+            'totalShifts' => $schedules->count(),
+            'staffCount' => $byStaff->where('staffId', '!=', null)->count(),
+            'avgCompletionRate' => $byStaff->count() > 0
+                ? round($byStaff->avg('completionRate'), 1)
+                : 0,
+        ],
+        'filters' => ['from' => $from->format('Y-m-d'), 'to' => $to->format('Y-m-d')],
+    ]);
+})->middleware(['auth', 'verified'])->name('reports.staff-performance');
+
+Route::get('/reports/clinical-outcomes', function () {
+    abort_unless(AuditTrail::canViewReports(request()->user()), 403);
+
+    $fromParam = request('from');
+    $toParam = request('to');
+    $from = $fromParam ? Carbon::parse($fromParam)->startOfDay() : now()->subDays(30)->startOfDay();
+    $to = $toParam ? Carbon::parse($toParam)->endOfDay() : now()->endOfDay();
+
+    $vitals = PatientVital::query()->whereBetween('recorded_at', [$from, $to])->get();
+    $fluid = PatientFluidRecord::query()->whereBetween('recorded_at', [$from, $to])->get();
+    $bowel = PatientBowelRecord::query()->whereBetween('recorded_at', [$from, $to])->get();
+    $wounds = PatientWoundAssessment::query()->whereBetween('recorded_at', [$from, $to])->get();
+
+    $highPain = $vitals->where('pain_score', '>=', 7)->count()
+        + $wounds->where('pain_score', '>=', 7)->count();
+    $lowSpo2 = $vitals->where('spo2', '<', 94)->whereNotNull('spo2')->count();
+    $woundEscalations = $wounds->where('escalation_required', true)->count();
+    $fluidIntakeMl = (int) $fluid->sum('fluid_intake_ml');
+
+    $weeklyVitals = $vitals->groupBy(fn ($v) => $v->recorded_at?->format('Y-W') ?? 'unknown')
+        ->map(fn ($group, $week) => [
+            'week' => $week,
+            'count' => $group->count(),
+            'avgHeartRate' => round($group->avg('heart_rate') ?? 0, 1),
+            'avgSpo2' => round($group->avg('spo2') ?? 0, 1),
+        ])
+        ->values()
+        ->take(12);
+
+    return Inertia::render('ReportsClinicalOutcomes', [
+        'stats' => [
+            'vitalEntries' => $vitals->count(),
+            'fluidEntries' => $fluid->count(),
+            'bowelEntries' => $bowel->count(),
+            'woundAssessments' => $wounds->count(),
+            'highPainFlags' => $highPain,
+            'lowSpo2Flags' => $lowSpo2,
+            'woundEscalations' => $woundEscalations,
+            'fluidIntakeMl' => $fluidIntakeMl,
+        ],
+        'weeklyVitals' => $weeklyVitals,
+        'filters' => ['from' => $from->format('Y-m-d'), 'to' => $to->format('Y-m-d')],
+    ]);
+})->middleware(['auth', 'verified'])->name('reports.clinical-outcomes');
+
 Route::get('/reports/export/audit/csv', function () {
     abort_unless(AuditTrail::canViewReports(request()->user()), 403, 'You do not have permission to view audit reports.');
 
@@ -1353,6 +3863,33 @@ Route::post('/patients', function () {
         'gender' => ['required', 'string', 'max:50'],
         'primary_diagnosis' => ['nullable', 'string', 'max:500'],
         'severe_allergies' => ['nullable', 'string', 'max:500'],
+        'allergy_details' => ['nullable', 'array'],
+        'allergy_details.*.allergen' => ['required_with:allergy_details', 'string', 'max:255'],
+        'allergy_details.*.reaction' => ['nullable', 'string', 'max:255'],
+        'allergy_details.*.severity' => ['nullable', 'string', 'max:100'],
+        'allergy_details.*.verified_at' => ['nullable', 'date'],
+        'preferred_name' => ['nullable', 'string', 'max:255'],
+        'gp_name' => ['nullable', 'string', 'max:255'],
+        'gp_practice' => ['nullable', 'string', 'max:255'],
+        'gp_phone' => ['nullable', 'string', 'max:50'],
+        'primary_language' => ['nullable', 'string', 'max:100'],
+        'interpreter_required' => ['nullable', 'boolean'],
+        'capacity_status' => ['nullable', 'string', 'max:255'],
+        'best_interest_decision' => ['nullable', 'string', 'max:2000'],
+        'information_sharing_consent' => ['nullable', 'string', 'max:255'],
+        'dols_lps_status' => ['nullable', 'string', 'max:255'],
+        'dnacpr_status' => ['nullable', 'string', 'max:255'],
+        'mobility_aids' => ['nullable', 'string', 'max:500'],
+        'hoist_type' => ['nullable', 'string', 'max:255'],
+        'sling_size' => ['nullable', 'string', 'max:100'],
+        'equipment_notes' => ['nullable', 'string', 'max:2000'],
+        'environmental_notes' => ['nullable', 'string', 'max:2000'],
+        'social_worker_name' => ['nullable', 'string', 'max:255'],
+        'social_worker_contact' => ['nullable', 'string', 'max:100'],
+        'commissioner_name' => ['nullable', 'string', 'max:255'],
+        'commissioner_contact' => ['nullable', 'string', 'max:100'],
+        'emergency_contact_name' => ['nullable', 'string', 'max:255'],
+        'emergency_contact_phone' => ['nullable', 'string', 'max:50'],
         'rag_status' => ['required', 'string', 'in:green,amber,red'],
         'staffing_ratio' => ['required', 'string', 'max:50'],
         'address_line_1' => ['required', 'string', 'max:255'],
@@ -1369,6 +3906,8 @@ Route::post('/patients', function () {
         'height_m' => ['required', 'numeric', 'between:0.3,3'],
         'start_date' => ['required', 'date'],
         'photo' => ['nullable', 'image', 'mimes:jpg,jpeg,png', 'max:3072'],
+        'photo_base64' => ['nullable', 'string', 'max:7000000'],
+        'photo_filename' => ['nullable', 'string', 'max:255'],
         'name' => ['required', 'string', 'max:255'],
         'nhs_number' => [
             'required',
@@ -1416,15 +3955,63 @@ Route::post('/patients', function () {
         }
     }
 
+    $allergyDetails = normalize_patient_allergy_details(
+        $payload['severe_allergies'] ?? ($payload['allergies'] ?? null),
+        $payload['allergy_details'] ?? null,
+    );
+    $legacyAllergies = !empty($allergyDetails)
+        ? collect($allergyDetails)->pluck('allergen')->all()
+        : (!empty($payload['allergies'] ?? null) ? array_map('trim', explode(',', (string) $payload['allergies'])) : ['None']);
+
     $patient = Patient::query()->create([
         'url_key' => $urlKey,
         'slug' => $slug,
         'name' => $name,
+        'preferred_name' => ($payload['preferred_name'] ?? null) ?: null,
         'reference' => '#'.strtoupper($urlKey),
         'nhs_number' => $payload['nhs_number'] ?: null,
-        'photo_path' => request()->hasFile('photo') ? request()->file('photo')->store('patient-photos', 'public') : null,
+        'gp_name' => ($payload['gp_name'] ?? null) ?: null,
+        'gp_practice' => ($payload['gp_practice'] ?? null) ?: null,
+        'gp_phone' => ($payload['gp_phone'] ?? null) ?: null,
+        'primary_language' => ($payload['primary_language'] ?? null) ?: null,
+        'interpreter_required' => (bool) ($payload['interpreter_required'] ?? false),
+        'capacity_status' => ($payload['capacity_status'] ?? null) ?: null,
+        'best_interest_decision' => ($payload['best_interest_decision'] ?? null) ?: null,
+        'information_sharing_consent' => ($payload['information_sharing_consent'] ?? null) ?: null,
+        'dols_lps_status' => ($payload['dols_lps_status'] ?? null) ?: null,
+        'dnacpr_status' => ($payload['dnacpr_status'] ?? null) ?: null,
+        'allergy_details' => !empty($allergyDetails) ? $allergyDetails : null,
+        'mobility_aids' => ($payload['mobility_aids'] ?? null) ?: null,
+        'hoist_type' => ($payload['hoist_type'] ?? null) ?: null,
+        'sling_size' => ($payload['sling_size'] ?? null) ?: null,
+        'equipment_notes' => ($payload['equipment_notes'] ?? null) ?: null,
+        'environmental_notes' => ($payload['environmental_notes'] ?? null) ?: null,
+        'social_worker_name' => ($payload['social_worker_name'] ?? null) ?: null,
+        'social_worker_contact' => ($payload['social_worker_contact'] ?? null) ?: null,
+        'commissioner_name' => ($payload['commissioner_name'] ?? null) ?: null,
+        'commissioner_contact' => ($payload['commissioner_contact'] ?? null) ?: null,
+        'emergency_contact_name' => ($payload['emergency_contact_name'] ?? null) ?: null,
+        'emergency_contact_phone' => ($payload['emergency_contact_phone'] ?? null) ?: null,
+        'primary_diagnosis' => ($payload['primary_diagnosis'] ?? null) ?: null,
+        'photo_path' => (function () use ($payload) {
+            if (request()->hasFile('photo')) {
+                return request()->file('photo')->store('patient-photos', 'public');
+            }
+            if (!empty($payload['photo_base64'])) {
+                $decoded = base64_decode((string) $payload['photo_base64'], true);
+                if ($decoded !== false) {
+                    $ext = pathinfo((string) ($payload['photo_filename'] ?? 'patient.jpg'), PATHINFO_EXTENSION) ?: 'jpg';
+                    $filename = 'patient-photos/'.Str::uuid().'.'.Str::lower($ext);
+                    Storage::disk('public')->put($filename, $decoded);
+
+                    return $filename;
+                }
+            }
+
+            return null;
+        })(),
         'dob' => $payload['dob'] ?: null,
-        'allergies' => ! empty($payload['allergies'] ?? null) ? array_map('trim', explode(',', (string) $payload['allergies'])) : ['None'],
+        'allergies' => $legacyAllergies,
         'address' => $payload['address'] ?: null,
         'latitude' => $geocoded['latitude'],
         'longitude' => $geocoded['longitude'],
@@ -1476,7 +4063,7 @@ Route::get('/patients/{patient}', function (string $patient) {
         ->latest('recorded_at')
         ->latest('id')
         ->first();
-    $activeAlerts = [];
+    $activeAlerts = build_patient_profile_alert_messages($record);
     $nextVisit = PatientSchedule::query()
         ->with('assignedUser:id,name,first_name,surname')
         ->where('patient_id', $record->id)
@@ -1525,33 +4112,33 @@ Route::get('/patients/{patient}', function (string $patient) {
 
             if ($sessionStartedAt->greaterThan($scheduledStart)) {
                 $lateMinutes = $scheduledStart->diffInMinutes($sessionStartedAt);
-                $activeAlerts[] = "Last Visit started {$lateMinutes} minute".($lateMinutes === 1 ? '' : 's')." late.";
+                $activeAlerts[] = "Last visit started {$lateMinutes} minute".($lateMinutes === 1 ? '' : 's').' late.';
             }
         } catch (\Throwable) {
             // Ignore malformed snapshot dates so profile rendering remains stable.
         }
     }
 
+    $recentJournalEntries = Schema::hasTable('care_journal_entries')
+        ? CareJournalEntry::query()
+            ->where('patient_id', $record->id)
+            ->with('author:id,name,first_name,surname')
+            ->orderByDesc('recorded_at')
+            ->orderByDesc('id')
+            ->limit(3)
+            ->get()
+            ->map(fn (CareJournalEntry $entry) => map_care_journal_entry($entry))
+            ->values()
+        : collect();
+
+    $authUser = request()->user();
+    $canEditProfile = user_has_primary_role($authUser, ['super_admin', 'admin', 'care_manager']);
+
     return Inertia::render('PatientRecord', [
         'patientSlug' => $patient,
-        'patient' => [
-            'name' => $record->name,
-            'nhsNumber' => $record->nhs_number,
-            'dob' => $record->dob,
-            'address' => $record->address,
-            'phone' => $record->phone,
-            'status' => $record->status,
-            'ragStatus' => $record->rag_status,
-            'staffingRatio' => $record->staffing_ratio,
-            'nextOfKin' => $record->next_of_kin,
-            'nextOfKinTel' => $record->next_of_kin_tel,
-            'nextOfKinEmail' => $record->next_of_kin_email,
-            'otherRelevantPeople' => $record->other_relevant_people,
-            'socialServicesNumber' => $record->social_services_number,
-            'allergies' => is_array($record->allergies) ? $record->allergies : [],
-            'photoUrl' => $record->photo_path ? route('patients.photo', ['patientRecord' => $record->id]) : null,
-            'updatedAt' => optional($record->updated_at)->format('H:i'),
-        ],
+        'patient' => map_patient_profile_payload($record),
+        'canEditProfile' => $canEditProfile,
+        'recentJournalEntries' => $recentJournalEntries,
         'latestVitals' => $latestVitals ? [
             'heartRate' => $latestVitals->heart_rate,
             'bpSystolic' => $latestVitals->bp_systolic,
@@ -1571,6 +4158,97 @@ Route::get('/patients/{patient}', function (string $patient) {
         ] : null,
     ]);
 })->middleware(['auth', 'verified'])->name('patients.show');
+
+Route::patch('/patients/{patient}/profile', function (Request $request, string $patient) {
+    abort_unless(user_has_primary_role($request->user(), ['super_admin', 'admin', 'care_manager']), 403);
+
+    $record = Patient::query()->where('url_key', $patient)->firstOrFail();
+
+    $validated = $request->validate([
+        'preferred_name' => ['nullable', 'string', 'max:255'],
+        'gp_name' => ['nullable', 'string', 'max:255'],
+        'gp_practice' => ['nullable', 'string', 'max:255'],
+        'gp_phone' => ['nullable', 'string', 'max:50'],
+        'primary_language' => ['nullable', 'string', 'max:100'],
+        'interpreter_required' => ['nullable', 'boolean'],
+        'capacity_status' => ['nullable', 'string', 'max:255'],
+        'best_interest_decision' => ['nullable', 'string', 'max:2000'],
+        'information_sharing_consent' => ['nullable', 'string', 'max:255'],
+        'dols_lps_status' => ['nullable', 'string', 'max:255'],
+        'dnacpr_status' => ['nullable', 'string', 'max:255'],
+        'allergy_details' => ['nullable', 'array'],
+        'allergy_details.*.allergen' => ['required_with:allergy_details', 'string', 'max:255'],
+        'allergy_details.*.reaction' => ['nullable', 'string', 'max:255'],
+        'allergy_details.*.severity' => ['nullable', 'string', 'max:100'],
+        'allergy_details.*.verified_at' => ['nullable', 'date'],
+        'mobility_aids' => ['nullable', 'string', 'max:500'],
+        'hoist_type' => ['nullable', 'string', 'max:255'],
+        'sling_size' => ['nullable', 'string', 'max:100'],
+        'equipment_notes' => ['nullable', 'string', 'max:2000'],
+        'environmental_notes' => ['nullable', 'string', 'max:2000'],
+        'social_worker_name' => ['nullable', 'string', 'max:255'],
+        'social_worker_contact' => ['nullable', 'string', 'max:100'],
+        'commissioner_name' => ['nullable', 'string', 'max:255'],
+        'commissioner_contact' => ['nullable', 'string', 'max:100'],
+        'emergency_contact_name' => ['nullable', 'string', 'max:255'],
+        'emergency_contact_phone' => ['nullable', 'string', 'max:50'],
+        'primary_diagnosis' => ['nullable', 'string', 'max:500'],
+        'staffing_ratio' => ['nullable', 'string', 'max:50'],
+        'next_of_kin' => ['nullable', 'string', 'max:255'],
+        'next_of_kin_tel' => ['nullable', 'string', 'max:100'],
+        'next_of_kin_email' => ['nullable', 'email', 'max:255'],
+        'other_relevant_people' => ['nullable', 'string', 'max:1000'],
+        'social_services_number' => ['nullable', 'string', 'max:100'],
+    ]);
+
+    $allergyDetails = normalize_patient_allergy_details(null, $validated['allergy_details'] ?? []);
+
+    $record->update([
+        'preferred_name' => $validated['preferred_name'] ?? null,
+        'gp_name' => $validated['gp_name'] ?? null,
+        'gp_practice' => $validated['gp_practice'] ?? null,
+        'gp_phone' => $validated['gp_phone'] ?? null,
+        'primary_language' => $validated['primary_language'] ?? null,
+        'interpreter_required' => (bool) ($validated['interpreter_required'] ?? false),
+        'capacity_status' => $validated['capacity_status'] ?? null,
+        'best_interest_decision' => $validated['best_interest_decision'] ?? null,
+        'information_sharing_consent' => $validated['information_sharing_consent'] ?? null,
+        'dols_lps_status' => $validated['dols_lps_status'] ?? null,
+        'dnacpr_status' => $validated['dnacpr_status'] ?? null,
+        'allergy_details' => !empty($allergyDetails) ? $allergyDetails : null,
+        'allergies' => !empty($allergyDetails) ? collect($allergyDetails)->pluck('allergen')->all() : ['None'],
+        'mobility_aids' => $validated['mobility_aids'] ?? null,
+        'hoist_type' => $validated['hoist_type'] ?? null,
+        'sling_size' => $validated['sling_size'] ?? null,
+        'equipment_notes' => $validated['equipment_notes'] ?? null,
+        'environmental_notes' => $validated['environmental_notes'] ?? null,
+        'social_worker_name' => $validated['social_worker_name'] ?? null,
+        'social_worker_contact' => $validated['social_worker_contact'] ?? null,
+        'commissioner_name' => $validated['commissioner_name'] ?? null,
+        'commissioner_contact' => $validated['commissioner_contact'] ?? null,
+        'emergency_contact_name' => $validated['emergency_contact_name'] ?? null,
+        'emergency_contact_phone' => $validated['emergency_contact_phone'] ?? null,
+        'primary_diagnosis' => $validated['primary_diagnosis'] ?? null,
+        'staffing_ratio' => $validated['staffing_ratio'] ?? $record->staffing_ratio,
+        'next_of_kin' => $validated['next_of_kin'] ?? $record->next_of_kin,
+        'next_of_kin_tel' => $validated['next_of_kin_tel'] ?? $record->next_of_kin_tel,
+        'next_of_kin_email' => $validated['next_of_kin_email'] ?? $record->next_of_kin_email,
+        'other_relevant_people' => $validated['other_relevant_people'] ?? $record->other_relevant_people,
+        'social_services_number' => $validated['social_services_number'] ?? $record->social_services_number,
+    ]);
+
+    AuditTrail::record(
+        'updated',
+        'Updated clinical profile for '.$record->name,
+        'patient',
+        $patient,
+        $record->name,
+        null,
+        ['patient_url_key' => $patient],
+    );
+
+    return redirect()->back()->with('success', 'Patient profile updated successfully.');
+})->middleware(['auth', 'verified'])->name('patients.profile.update');
 
 Route::patch('/patients/{patient}/rag-status', function (Request $request, string $patient) {
     $authUser = $request->user();
@@ -1617,6 +4295,30 @@ Route::get('/patients/{patient}/observations', function (string $patient) {
         ->map(fn (PatientVital $vital) => map_patient_vital($vital))
         ->values();
 
+    $fluidRecords = Schema::hasTable('patient_fluid_records')
+        ? PatientFluidRecord::query()
+            ->where('patient_id', $record->id)
+            ->with(['recordedBy:id,name,first_name,surname'])
+            ->orderByDesc('recorded_at')
+            ->orderByDesc('id')
+            ->limit(100)
+            ->get()
+            ->map(fn (PatientFluidRecord $row) => map_patient_fluid_record($row))
+            ->values()
+        : collect();
+
+    $bowelRecords = Schema::hasTable('patient_bowel_records')
+        ? PatientBowelRecord::query()
+            ->where('patient_id', $record->id)
+            ->with(['recordedBy:id,name,first_name,surname'])
+            ->orderByDesc('recorded_at')
+            ->orderByDesc('id')
+            ->limit(100)
+            ->get()
+            ->map(fn (PatientBowelRecord $row) => map_patient_bowel_record($row))
+            ->values()
+        : collect();
+
     return Inertia::render('PatientObservations', [
         'patientSlug' => $patient,
         'patient' => [
@@ -1624,50 +4326,238 @@ Route::get('/patients/{patient}/observations', function (string $patient) {
             'ragStatus' => $record->rag_status,
         ],
         'observations' => $observations,
-        'latestVitals' => $latestVitals ? [
-            'heartRate' => $latestVitals->heart_rate,
-            'bpSystolic' => $latestVitals->bp_systolic,
-            'spo2' => $latestVitals->spo2,
-            'recordedAt' => optional($latestVitals->recorded_at ?? $latestVitals->created_at)->toIso8601String(),
-        ] : null,
+        'latestVitals' => $latestVitals ? map_patient_vital($latestVitals) : null,
+        'chartData' => build_patient_observation_chart_series($record),
+        'fluidRecords' => $fluidRecords,
+        'fluidBalanceSummary' => Schema::hasTable('patient_fluid_records')
+            ? build_patient_fluid_balance_summary($record)
+            : [],
+        'bowelRecords' => $bowelRecords,
+        'bristolOptions' => collect(PatientBowelRecord::BRISTOL_LABELS)
+            ->map(fn ($label, $value) => ['value' => $value, 'label' => $label])
+            ->values(),
     ]);
 })->middleware(['auth', 'verified'])->name('patients.observations');
 
-Route::get('/patients/{patient}/care-plans', function (string $patient) {
+Route::get('/patients/{patient}/handovers', function (string $patient) {
     $record = Patient::query()->where('url_key', $patient)->firstOrFail();
-    $carePlanForms = PatientCarePlanForm::query()
-        ->where('patient_slug', $patient)
-        ->get(['plan_slug', 'status', 'updated_at', 'submitted_at', 'updated_by_user_id']);
+    $scheduleId = request()->query('schedule_id');
+    $scheduleId = $scheduleId !== null && $scheduleId !== '' ? (int) $scheduleId : null;
 
-    $updaterIds = $carePlanForms
-        ->pluck('updated_by_user_id')
-        ->filter()
-        ->unique()
+    $handovers = PatientHandover::query()
+        ->where('patient_id', $record->id)
+        ->with(['author:id,name,first_name,surname', 'schedule:id,start_at,end_at'])
+        ->orderByDesc('recorded_at')
+        ->orderByDesc('id')
+        ->limit(100)
+        ->get()
+        ->map(fn (PatientHandover $handover) => map_patient_handover($handover))
         ->values();
 
-    $updaterNamesById = User::query()
-        ->whereIn('id', $updaterIds)
-        ->get(['id', 'name', 'first_name', 'surname'])
-        ->mapWithKeys(function (User $user) {
-            $fullName = trim((string) ($user->name ?? ''));
-            if ($fullName === '') {
-                $fullName = trim((string) (($user->first_name ?? '').' '.($user->surname ?? '')));
-            }
+    return Inertia::render('PatientHandovers', [
+        'patientSlug' => $patient,
+        'patient' => [
+            'name' => $record->name,
+            'ragStatus' => $record->rag_status,
+        ],
+        'handovers' => $handovers,
+        'prefill' => [
+            'scheduleId' => $scheduleId,
+            'shiftDate' => now()->toDateString(),
+            'shiftType' => (int) now()->format('G') >= 18 || (int) now()->format('G') < 7 ? 'night' : 'day',
+        ],
+    ]);
+})->middleware(['auth', 'verified'])->name('patients.handovers');
 
-            return [$user->id => ($fullName !== '' ? $fullName : 'Unknown user')];
-        });
+Route::post('/patients/{patient}/handovers', function (string $patient, Request $request) {
+    $record = Patient::query()->where('url_key', $patient)->firstOrFail();
+    $validated = validate_patient_handover_payload($request->all());
 
-    $carePlanSnapshots = $carePlanForms
-        ->mapWithKeys(function (PatientCarePlanForm $form) use ($updaterNamesById) {
-            return [
-                $form->plan_slug => [
-                    'status' => $form->status,
-                    'lastUpdatedAt' => optional($form->updated_at)->toIso8601String(),
-                    'submittedAt' => optional($form->submitted_at)->toIso8601String(),
-                    'author' => $updaterNamesById[$form->updated_by_user_id] ?? null,
-                ],
-            ];
-        });
+    $scheduleId = isset($validated['schedule_id']) ? (int) $validated['schedule_id'] : null;
+    if ($scheduleId) {
+        $schedule = PatientSchedule::query()
+            ->where('id', $scheduleId)
+            ->where('patient_id', $record->id)
+            ->first();
+        if (!$schedule) {
+            throw ValidationException::withMessages([
+                'schedule_id' => 'The selected visit is not valid for this patient.',
+            ]);
+        }
+    } else {
+        $schedule = null;
+    }
+
+    $handover = PatientHandover::query()->create([
+        'patient_id' => $record->id,
+        'patient_schedule_id' => $schedule?->id,
+        'shift_type' => $validated['shift_type'],
+        'shift_date' => $validated['shift_date'],
+        'author_user_id' => $request->user()->id,
+        'presentation' => $validated['shift_type'] === 'day' ? $validated['presentation'] : null,
+        'care_delivered' => $validated['shift_type'] === 'day' ? $validated['care_delivered'] : null,
+        'medication_summary' => $validated['shift_type'] === 'day' ? $validated['medication_summary'] : null,
+        'risks_changes' => $validated['shift_type'] === 'day' ? $validated['risks_changes'] : null,
+        'handover_notes' => $validated['shift_type'] === 'day' ? $validated['handover_notes'] : null,
+        'sleep_summary' => $validated['shift_type'] === 'night' ? $validated['sleep_summary'] : null,
+        'disturbances' => $validated['shift_type'] === 'night' ? $validated['disturbances'] : null,
+        'night_medications' => $validated['shift_type'] === 'night' ? $validated['night_medications'] : null,
+        'seizure_respiratory_events' => $validated['shift_type'] === 'night' ? $validated['seizure_respiratory_events'] : null,
+        'morning_priorities' => $validated['shift_type'] === 'night' ? $validated['morning_priorities'] : null,
+        'recorded_at' => now(),
+    ]);
+
+    $shiftLabel = $validated['shift_type'] === 'day' ? 'Day' : 'Night';
+    AuditTrail::record(
+        'created',
+        "Recorded {$shiftLabel} handover for {$record->name}",
+        'handover',
+        (string) $handover->id,
+        $record->name,
+        ['shift_date' => $validated['shift_date'], 'shift_type' => $validated['shift_type']],
+        ['patient_url_key' => $record->url_key],
+        $request,
+    );
+
+    return redirect()
+        ->route('patients.handovers', $record->url_key)
+        ->with('success', ucfirst($validated['shift_type']).' handover saved.');
+})->middleware(['auth', 'verified'])->name('patients.handovers.store');
+
+Route::get('/patients/{patient}/wound-care', function (string $patient) {
+    $record = Patient::query()->where('url_key', $patient)->firstOrFail();
+
+    $assessments = PatientWoundAssessment::query()
+        ->where('patient_id', $record->id)
+        ->with(['recordedBy:id,name,first_name,surname'])
+        ->orderByDesc('recorded_at')
+        ->orderByDesc('id')
+        ->limit(100)
+        ->get()
+        ->map(fn (PatientWoundAssessment $row) => map_patient_wound_assessment($row))
+        ->values();
+
+    $latest = $assessments->first();
+
+    return Inertia::render('PatientWoundCare', [
+        'patientSlug' => $patient,
+        'patient' => [
+            'name' => $record->name,
+            'ragStatus' => $record->rag_status,
+        ],
+        'assessments' => $assessments,
+        'latestAssessment' => $latest,
+        'chartData' => build_patient_wound_measurement_chart_series($record),
+        'pressureGrades' => collect(PatientWoundAssessment::PRESSURE_GRADES)
+            ->map(fn (string $grade) => [
+                'value' => $grade,
+                'label' => Str::of($grade)->replace('_', ' ')->title()->toString(),
+            ])
+            ->values(),
+        'documentChecklistUrl' => route('patients.documents.show', [$patient, 'tissue-viability-checklist']),
+        'bodyMapRegions' => collect(PatientWoundAssessment::BODY_MAP_REGIONS)
+            ->map(fn (string $region) => [
+                'value' => $region,
+                'label' => Str::of($region)->replace('_', ' ')->title()->toString(),
+            ])
+            ->values(),
+    ]);
+})->middleware(['auth', 'verified'])->name('patients.wound-care');
+
+Route::post('/patients/{patient}/wound-care', function (string $patient) {
+    $patientRecord = Patient::query()->where('url_key', $patient)->firstOrFail();
+    $payload = request()->validate([
+        'wound_site' => ['required', 'string', 'max:255'],
+        'wound_type' => ['nullable', 'string', 'max:255'],
+        'pressure_ulcer_grade' => ['nullable', 'string', 'in:'.implode(',', PatientWoundAssessment::PRESSURE_GRADES)],
+        'length_cm' => ['nullable', 'numeric', 'between:0,100'],
+        'width_cm' => ['nullable', 'numeric', 'between:0,100'],
+        'depth_cm' => ['nullable', 'numeric', 'between:0,100'],
+        'exudate' => ['nullable', 'string', 'max:2000'],
+        'periwound_condition' => ['nullable', 'string', 'max:2000'],
+        'pain_score' => ['nullable', 'integer', 'between:0,10'],
+        'dressing_type' => ['nullable', 'string', 'max:2000'],
+        'pressure_regime' => ['nullable', 'string', 'max:2000'],
+        'infection_signs' => ['nullable', 'string', 'max:2000'],
+        'escalation_required' => ['nullable', 'boolean'],
+        'body_map_notes' => ['nullable', 'string', 'max:5000'],
+        'body_map_region' => ['nullable', 'string', 'in:'.implode(',', PatientWoundAssessment::BODY_MAP_REGIONS)],
+        'review_due_at' => ['nullable', 'date'],
+        'plan_actions' => ['nullable', 'string', 'max:5000'],
+        'photo' => ['nullable', 'image', 'max:5120'],
+        'photo_base64' => ['nullable', 'string', 'max:7000000'],
+        'photo_filename' => ['nullable', 'string', 'max:255'],
+    ]);
+
+    $photoPath = null;
+    if (request()->hasFile('photo')) {
+        $photoPath = request()->file('photo')->store('wound-photos/'.$patientRecord->id, 'public');
+    } elseif (!empty($payload['photo_base64'])) {
+        $decoded = base64_decode((string) $payload['photo_base64'], true);
+        if ($decoded !== false) {
+            $ext = pathinfo((string) ($payload['photo_filename'] ?? 'wound.jpg'), PATHINFO_EXTENSION) ?: 'jpg';
+            $filename = 'wound-photos/'.$patientRecord->id.'/'.Str::uuid().'.'.Str::lower($ext);
+            Storage::disk('public')->put($filename, $decoded);
+            $photoPath = $filename;
+        }
+    }
+
+    $reviewDue = isset($payload['review_due_at'])
+        ? Carbon::parse((string) $payload['review_due_at'])->toDateString()
+        : now()->addDays(7)->toDateString();
+
+    $assessment = PatientWoundAssessment::query()->create([
+        'patient_id' => $patientRecord->id,
+        'recorded_by_user_id' => request()->user()?->id,
+        'recorded_at' => now(),
+        'wound_site' => trim($payload['wound_site']),
+        'wound_type' => trim((string) ($payload['wound_type'] ?? '')) ?: null,
+        'pressure_ulcer_grade' => $payload['pressure_ulcer_grade'] ?? null,
+        'length_cm' => $payload['length_cm'] ?? null,
+        'width_cm' => $payload['width_cm'] ?? null,
+        'depth_cm' => $payload['depth_cm'] ?? null,
+        'exudate' => trim((string) ($payload['exudate'] ?? '')) ?: null,
+        'periwound_condition' => trim((string) ($payload['periwound_condition'] ?? '')) ?: null,
+        'pain_score' => $payload['pain_score'] ?? null,
+        'dressing_type' => trim((string) ($payload['dressing_type'] ?? '')) ?: null,
+        'pressure_regime' => trim((string) ($payload['pressure_regime'] ?? '')) ?: null,
+        'infection_signs' => trim((string) ($payload['infection_signs'] ?? '')) ?: null,
+        'escalation_required' => (bool) ($payload['escalation_required'] ?? false),
+        'body_map_notes' => trim((string) ($payload['body_map_notes'] ?? '')) ?: null,
+        'body_map_region' => $payload['body_map_region'] ?? null,
+        'photo_path' => $photoPath,
+        'review_due_at' => $reviewDue,
+        'plan_actions' => trim((string) ($payload['plan_actions'] ?? '')) ?: null,
+    ]);
+
+    $alerts = evaluate_wound_assessment_alerts($assessment);
+
+    AuditTrail::record(
+        'created',
+        'Recorded wound assessment for '.$patientRecord->name,
+        'wound_assessment',
+        (string) $assessment->id,
+        $patientRecord->name,
+        [
+            'wound_site' => $assessment->wound_site,
+            'escalation_required' => $assessment->escalation_required,
+            'alerts' => $alerts,
+        ],
+        ['patient_url_key' => $patient],
+    );
+
+    $flashMessage = 'Wound assessment recorded successfully.';
+    if (!empty($alerts)) {
+        $flashMessage .= ' Alert: '.implode(' ', array_slice($alerts, 0, 2));
+    }
+
+    return redirect()
+        ->route('patients.wound-care', $patientRecord->url_key)
+        ->with('success', $flashMessage);
+})->middleware(['auth', 'verified', 'role:super_admin,admin,care_manager,supervisor,care_worker'])->name('patients.wound-care.store');
+
+Route::get('/patients/{patient}/care-plans', function (string $patient) {
+    $record = Patient::query()->where('url_key', $patient)->firstOrFail();
 
     return Inertia::render('PatientCarePlans', [
         'patientSlug' => $patient,
@@ -1677,7 +4567,7 @@ Route::get('/patients/{patient}/care-plans', function (string $patient) {
             'dob' => $record->dob ?? 'Not available',
             'allergies' => is_array($record->allergies) ? $record->allergies : [],
         ],
-        'carePlanSnapshots' => $carePlanSnapshots,
+        'carePlans' => build_patient_care_plan_cards($patient),
     ]);
 })->middleware(['auth', 'verified'])->name('patients.careplans');
 
@@ -1776,17 +4666,220 @@ Route::post('/patients/{patient}/care-plans/{plan}', function (string $patient, 
 })->middleware(['auth', 'verified', 'role:super_admin,admin,care_manager'])->name('patients.careplans.save');
 
 Route::get('/patients/{patient}/risk-assessments', function (string $patient) {
+    $record = Patient::query()->where('url_key', $patient)->firstOrFail();
+
+    $saved = PatientRiskAssessment::query()
+        ->where('patient_id', $record->id)
+        ->get()
+        ->keyBy('risk_slug');
+
+    $updaterIds = $saved->pluck('updated_by_user_id')->filter()->unique()->values();
+    $authorNames = User::query()
+        ->whereIn('id', $updaterIds)
+        ->get(['id', 'name', 'first_name', 'surname'])
+        ->mapWithKeys(function (User $user) {
+            $name = trim((string) ($user->name ?: (($user->first_name ?? '').' '.($user->surname ?? ''))));
+
+            return [$user->id => $name !== '' ? $name : 'Unknown user'];
+        });
+
+    $assessments = collect(risk_assessment_templates())
+        ->map(function (array $template) use ($saved, $authorNames) {
+            $row = $saved->get($template['slug']);
+
+            return map_patient_risk_assessment(
+                $row,
+                $template,
+                $row ? ($authorNames[$row->updated_by_user_id] ?? null) : null,
+            );
+        })
+        ->values();
+
     return Inertia::render('PatientRiskAssessments', [
         'patientSlug' => $patient,
+        'patient' => ['name' => $record->name],
+        'assessments' => $assessments,
     ]);
 })->middleware(['auth', 'verified'])->name('patients.risks');
 
 Route::get('/patients/{patient}/risk-assessments/{risk}', function (string $patient, string $risk) {
+    $record = Patient::query()->where('url_key', $patient)->firstOrFail();
+    $template = risk_assessment_template($risk);
+    abort_unless($template, 404);
+
+    $assessment = PatientRiskAssessment::query()
+        ->where('patient_id', $record->id)
+        ->where('risk_slug', $risk)
+        ->first();
+
+    $authorName = null;
+    if ($assessment?->updated_by_user_id) {
+        $updater = User::query()->find($assessment->updated_by_user_id, ['id', 'name', 'first_name', 'surname']);
+        if ($updater) {
+            $authorName = trim((string) ($updater->name ?: (($updater->first_name ?? '').' '.($updater->surname ?? ''))));
+            if ($authorName === '') {
+                $authorName = 'Unknown user';
+            }
+        }
+    }
+
+    $versions = $assessment ? list_risk_assessment_versions($assessment) : [];
+
     return Inertia::render('PatientRiskAssessmentDetail', [
         'patientSlug' => $patient,
+        'patient' => ['name' => $record->name],
         'riskSlug' => $risk,
+        'assessment' => map_patient_risk_assessment($assessment, $template, $authorName),
+        'versions' => $versions,
+        'canExportPdf' => $assessment !== null,
+        'levelOptions' => collect(PatientRiskAssessment::LEVELS)
+            ->map(fn (string $level) => ['value' => $level, 'label' => Str::of($level)->title()->toString()])
+            ->values(),
+        'statusOptions' => collect(PatientRiskAssessment::STATUSES)
+            ->map(fn (string $status) => ['value' => $status, 'label' => Str::of($status)->replace('_', ' ')->title()->toString()])
+            ->values(),
     ]);
 })->middleware(['auth', 'verified'])->name('patients.risks.show');
+
+Route::get('/patients/{patient}/risk-assessments/{risk}/pdf', function (string $patient, string $risk) {
+    $record = Patient::query()->where('url_key', $patient)->firstOrFail();
+    $template = risk_assessment_template($risk);
+    abort_unless($template, 404);
+
+    $assessment = PatientRiskAssessment::query()
+        ->where('patient_id', $record->id)
+        ->where('risk_slug', $risk)
+        ->firstOrFail();
+
+    $authorName = user_display_name(
+        $assessment->updated_by_user_id
+            ? User::query()->find($assessment->updated_by_user_id, ['id', 'name', 'first_name', 'surname'])
+            : null
+    );
+
+    $pdf = \Barryvdh\DomPDF\Facade\Pdf::loadView('reports.risk-assessment-pdf', [
+        'patient' => $record,
+        'title' => $template['title'],
+        'suggestedControls' => $template['suggestedControls'],
+        'assessment' => build_risk_assessment_pdf_payload($record, $assessment, $template, $authorName),
+        'generatedBy' => user_display_name(request()->user()) ?? 'System',
+    ]);
+
+    $filename = 'AlloCare-Risk-'.Str::slug($record->name).'-'.Str::slug($risk).'.pdf';
+
+    return $pdf->download($filename);
+})->middleware(['auth', 'verified'])->name('patients.risks.pdf');
+
+Route::post('/patients/{patient}/risk-assessments/{risk}', function (string $patient, string $risk, Request $request) {
+    $record = Patient::query()->where('url_key', $patient)->firstOrFail();
+    $template = risk_assessment_template($risk);
+    abort_unless($template, 404);
+
+    $validated = $request->validate([
+        'risk_level' => ['required', 'string', 'in:'.implode(',', PatientRiskAssessment::LEVELS)],
+        'status' => ['required', 'string', 'in:'.implode(',', PatientRiskAssessment::STATUSES)],
+        'triggers' => ['nullable', 'string', 'max:5000'],
+        'current_controls' => ['nullable', 'string', 'max:5000'],
+        'mitigation_plan' => ['nullable', 'string', 'max:5000'],
+        'owner_name' => ['nullable', 'string', 'max:255'],
+        'last_reviewed_at' => ['nullable', 'date'],
+        'next_review_due_at' => ['nullable', 'date'],
+        'review_cycle_months' => ['nullable', 'integer', 'min:1', 'max:24'],
+    ]);
+
+    $lastReviewed = isset($validated['last_reviewed_at'])
+        ? Carbon::parse((string) $validated['last_reviewed_at'])->toDateString()
+        : now()->toDateString();
+    $cycleMonths = $validated['review_cycle_months'] ?? 3;
+    $nextDue = isset($validated['next_review_due_at'])
+        ? Carbon::parse((string) $validated['next_review_due_at'])->toDateString()
+        : Carbon::parse($lastReviewed)->addMonths($cycleMonths)->toDateString();
+
+    $assessment = PatientRiskAssessment::query()->updateOrCreate(
+        ['patient_id' => $record->id, 'risk_slug' => $risk],
+        [
+            'risk_level' => $validated['risk_level'],
+            'status' => $validated['status'],
+            'triggers' => trim((string) ($validated['triggers'] ?? '')) ?: null,
+            'current_controls' => trim((string) ($validated['current_controls'] ?? '')) ?: null,
+            'mitigation_plan' => trim((string) ($validated['mitigation_plan'] ?? '')) ?: null,
+            'owner_name' => trim((string) ($validated['owner_name'] ?? '')) ?: null,
+            'last_reviewed_at' => $lastReviewed,
+            'next_review_due_at' => $nextDue,
+            'review_cycle_months' => $cycleMonths,
+            'reviewed_by_user_id' => $request->user()->id,
+            'updated_by_user_id' => $request->user()->id,
+        ],
+    );
+
+    record_risk_assessment_version_if_changed($assessment, $request->user());
+
+    AuditTrail::record(
+        'updated',
+        'Saved '.$template['title'].' assessment for '.$record->name,
+        'risk_assessment',
+        (string) $assessment->id,
+        $record->name,
+        ['risk_slug' => $risk, 'risk_level' => $validated['risk_level'], 'status' => $validated['status']],
+        ['patient_url_key' => $record->url_key],
+        $request,
+    );
+
+    return redirect()
+        ->route('patients.risks.show', ['patient' => $patient, 'risk' => $risk])
+        ->with('success', 'Risk assessment saved.');
+})->middleware(['auth', 'verified', 'role:super_admin,admin,care_manager'])->name('patients.risks.save');
+
+Route::post('/patients/{patient}/risk-assessments/{risk}/restore-version', function (string $patient, string $risk, Request $request) {
+    $record = Patient::query()->where('url_key', $patient)->firstOrFail();
+    $template = risk_assessment_template($risk);
+    abort_unless($template, 404);
+
+    $validated = $request->validate([
+        'version_id' => ['required', 'integer'],
+    ]);
+
+    $assessment = PatientRiskAssessment::query()
+        ->where('patient_id', $record->id)
+        ->where('risk_slug', $risk)
+        ->firstOrFail();
+
+    abort_unless(Schema::hasTable('patient_risk_assessment_versions'), 404);
+
+    $version = PatientRiskAssessmentVersion::query()
+        ->where('id', $validated['version_id'])
+        ->where('patient_risk_assessment_id', $assessment->id)
+        ->firstOrFail();
+
+    $snapshot = $version->snapshot;
+    abort_unless(is_array($snapshot) && $snapshot !== [], 422, 'Version snapshot is invalid.');
+
+    $restoredFrom = $version->recorded_at?->format('d M Y H:i') ?? 'selected version';
+    apply_risk_assessment_snapshot($assessment, $snapshot, $request->user());
+    $assessment->refresh();
+
+    record_risk_assessment_version_forced(
+        $assessment,
+        $request->user(),
+        'Restored from version recorded '.$restoredFrom,
+        true,
+    );
+
+    AuditTrail::record(
+        'updated',
+        'Restored '.$template['title'].' assessment for '.$record->name.' from version history',
+        'risk_assessment',
+        (string) $assessment->id,
+        $record->name,
+        ['version_id' => $version->id, 'restored_from' => $restoredFrom],
+        ['patient_url_key' => $record->url_key],
+        $request,
+    );
+
+    return redirect()
+        ->route('patients.risks.show', ['patient' => $patient, 'risk' => $risk])
+        ->with('success', 'Assessment restored from '.$restoredFrom.'.');
+})->middleware(['auth', 'verified', 'role:super_admin,admin,care_manager'])->name('patients.risks.restore-version');
 
 Route::get('/patients/{patient}/mar', function (string $patient) {
     $patientRecord = Patient::query()->where('url_key', $patient)->firstOrFail();
@@ -1803,6 +4896,7 @@ Route::get('/patients/{patient}/mar', function (string $patient) {
     $givenToday = $todayAdmins->where('status', 'given')->count();
     $refusedToday = $todayAdmins->where('status', 'refused')->count();
     $omittedToday = $todayAdmins->where('status', 'omitted')->count();
+    $delayedToday = $todayAdmins->where('status', 'delayed')->count();
     $dueToday = $activeMeds - $givenToday;
 
     $overdueReminders = MedicationReminder::query()
@@ -1821,11 +4915,34 @@ Route::get('/patients/{patient}/mar', function (string $patient) {
             'givenToday' => $givenToday,
             'refusedToday' => $refusedToday,
             'omittedToday' => $omittedToday,
+            'delayedToday' => $delayedToday,
             'dueToday' => max(0, $dueToday),
             'overdueReminders' => $overdueReminders,
         ],
     ]);
 })->middleware(['auth', 'verified'])->name('patients.mar');
+
+Route::get('/patients/{patient}/mar/monthly-chart/pdf', function (string $patient) {
+    $patientRecord = Patient::query()->where('url_key', $patient)->firstOrFail();
+    $monthParam = request('month');
+    $month = $monthParam
+        ? Carbon::parse($monthParam.'-01')->startOfMonth()
+        : now()->startOfMonth();
+
+    $rows = build_patient_mar_chart_rows($patientRecord, $month);
+    $days = range(1, $month->daysInMonth);
+
+    $pdf = \Barryvdh\DomPDF\Facade\Pdf::loadView('reports.mar-chart-pdf', [
+        'patient' => $patientRecord,
+        'month' => $month,
+        'days' => $days,
+        'rows' => $rows,
+    ])->setPaper('a4', 'landscape');
+
+    $filename = 'AlloCare-MAR-'.Str::slug($patientRecord->name).'-'.$month->format('Y-m').'.pdf';
+
+    return $pdf->download($filename);
+})->middleware(['auth', 'verified'])->name('patients.mar.monthly-chart.pdf');
 
 Route::get('/patients/{patient}/mar/{mar}', function (string $patient, string $mar) {
     $patientRecord = Patient::query()->where('url_key', $patient)->firstOrFail();
@@ -1854,6 +4971,12 @@ Route::get('/patients/{patient}/mar/{mar}', function (string $patient, string $m
                 }
             }
 
+            $witnessName = $latestAdministration?->witness_name;
+            if (!$witnessName && $latestAdministration?->witness_user_id) {
+                $latestAdministration->loadMissing('witness:id,name,first_name,surname');
+                $witnessName = trim((string) ($latestAdministration->witness?->name ?? ''));
+            }
+
             return [
                 'id' => $medication->id,
                 'medicine' => $medication->name,
@@ -1862,6 +4985,9 @@ Route::get('/patients/{patient}/mar/{mar}', function (string $patient, string $m
                 'dose' => $medication->dose ?? '',
                 'status' => Str::title((string) ($latestAdministration?->status ?? 'Due')),
                 'by' => $administeredByName,
+                'reason' => $latestAdministration?->reason,
+                'witness_user_id' => $latestAdministration?->witness_user_id,
+                'witness_name' => $witnessName,
                 'is_controlled' => $medication->is_controlled,
                 'is_prn' => $medication->is_prn,
             ];
@@ -1907,12 +5033,43 @@ Route::get('/patients/{patient}/mar/{mar}', function (string $patient, string $m
         ])
         ->values();
 
+    $controlledStock = PatientMedication::query()
+        ->where('patient_id', $patientRecord->id)
+        ->where('active', true)
+        ->where('is_controlled', true)
+        ->with('stock')
+        ->orderBy('name')
+        ->get()
+        ->map(fn (PatientMedication $med) => map_medication_stock($med->stock, $med))
+        ->values();
+
+    $inactiveMedications = PatientMedication::query()
+        ->where('patient_id', $patientRecord->id)
+        ->where('active', false)
+        ->orderBy('name')
+        ->get()
+        ->map(fn (PatientMedication $med) => [
+            'id' => $med->id,
+            'name' => $med->name,
+            'dose' => $med->dose,
+            'route' => $med->route,
+            'frequency' => $med->frequency,
+            'is_prn' => $med->is_prn,
+            'is_controlled' => $med->is_controlled,
+            'deactivatedAtLabel' => $med->updated_at?->format('d M Y, H:i'),
+        ])
+        ->values();
+
     return Inertia::render('PatientMARDetail', [
         'patientSlug' => $patient,
         'marSlug' => $mar,
         'initialRows' => $medications,
         'prnMedications' => $prnMedications,
         'reminders' => $reminders,
+        'witnessStaff' => list_mar_witness_staff(),
+        'controlledStock' => $controlledStock,
+        'inactiveMedications' => $inactiveMedications,
+        'canManageMedications' => user_has_primary_role(request()->user(), ['super_admin', 'admin', 'care_manager', 'supervisor']),
     ]);
 })->middleware(['auth', 'verified'])->name('patients.mar.show');
 
@@ -1925,13 +5082,15 @@ Route::post('/patients/{patient}/mar/{mar}', function (string $patient, string $
         'rows.*.time' => ['nullable', 'date_format:H:i'],
         'rows.*.route' => ['nullable', 'string', 'max:100'],
         'rows.*.dose' => ['nullable', 'string', 'max:100'],
-        'rows.*.status' => ['required', 'string', 'in:Given,Due,Refused,Omitted,Self-Administered'],
+        'rows.*.status' => ['required', 'string', 'in:Given,Due,Refused,Omitted,Delayed,Self-Administered'],
         'rows.*.reason' => ['nullable', 'string', 'max:500'],
         'rows.*.witness_name' => ['nullable', 'string', 'max:255'],
+        'rows.*.witness_user_id' => ['nullable', 'integer', 'exists:users,id'],
         'rows.*.is_prn_dose' => ['nullable', 'boolean'],
     ]);
 
     $errors = [];
+    $currentUserId = request()->user()?->id;
 
     foreach ($payload['rows'] as $idx => $row) {
         $status = strtolower(str_replace('-', '_', (string) $row['status']));
@@ -1970,14 +5129,32 @@ Route::post('/patients/{patient}/mar/{mar}', function (string $patient, string $
             ]);
         }
 
-        if (in_array($status, ['refused', 'omitted']) && empty($row['reason'])) {
-            $errors[] = "Row {$idx}: A reason is required when status is refused or omitted.";
+        if (in_array($status, ['refused', 'omitted', 'delayed']) && empty($row['reason'])) {
+            $errors[] = "Row {$idx}: A reason is required when status is refused, omitted, or delayed.";
             continue;
         }
 
-        if ($medication->is_controlled && $status === 'given' && empty($row['witness_name'])) {
-            $errors[] = "Row {$idx}: '{$medication->name}' is a controlled drug and requires a witness signature.";
-            continue;
+        $witnessUser = null;
+        if ($medication->is_controlled && $status === 'given') {
+            $witnessUserId = !empty($row['witness_user_id']) ? (int) $row['witness_user_id'] : null;
+            if (!$witnessUserId) {
+                $errors[] = "Row {$idx}: '{$medication->name}' requires a registered witness (different staff member).";
+                continue;
+            }
+            if ($witnessUserId === $currentUserId) {
+                $errors[] = "Row {$idx}: Witness must be a different staff member than the administrator.";
+                continue;
+            }
+            $witnessUser = User::query()->find($witnessUserId);
+            if (!$witnessUser) {
+                $errors[] = "Row {$idx}: Selected witness not found.";
+                continue;
+            }
+            $stock = MedicationStock::query()->where('patient_medication_id', $medication->id)->first();
+            if ($stock && (float) $stock->balance <= 0) {
+                $errors[] = "Row {$idx}: No controlled drug stock balance for '{$medication->name}'. Receive stock before administering.";
+                continue;
+            }
         }
 
         if ($medication->is_prn && $status === 'given') {
@@ -2000,17 +5177,33 @@ Route::post('/patients/{patient}/mar/{mar}', function (string $patient, string $
             $scheduledFor = Carbon::parse(now()->toDateString().' '.$row['time']);
         }
 
-        MedicationAdministration::query()->create([
+        $witnessName = $witnessUser
+            ? trim((string) ($witnessUser->name ?: (($witnessUser->first_name ?? '').' '.($witnessUser->surname ?? ''))))
+            : ($row['witness_name'] ?? null);
+
+        $administration = MedicationAdministration::query()->create([
             'patient_id' => $patientRecord->id,
             'patient_medication_id' => $medication->id,
             'administered_by_user_id' => request()->user()?->id,
             'status' => $status,
-            'administered_at' => $status === 'given' || $status === 'self_administered' ? now() : null,
+            'administered_at' => in_array($status, ['given', 'self_administered', 'delayed'], true) ? now() : null,
             'scheduled_for' => $scheduledFor,
             'source_mar_slug' => $mar,
             'reason' => $row['reason'] ?? null,
-            'witness_name' => $row['witness_name'] ?? null,
+            'witness_user_id' => $witnessUser?->id,
+            'witness_name' => $witnessName ?: null,
         ]);
+
+        if ($medication->is_controlled && $status === 'given') {
+            record_medication_stock_movement(
+                $medication,
+                MedicationStockMovement::TYPE_ADMINISTRATION,
+                -1,
+                request()->user(),
+                'eMAR administration #'.$administration->id,
+                $administration->id,
+            );
+        }
 
         if ($status !== 'due') {
             MedicationReminder::query()
@@ -2040,6 +5233,179 @@ Route::post('/patients/{patient}/mar/{mar}', function (string $patient, string $
 
     return redirect()->back()->with('success', 'eMAR saved successfully.');
 })->middleware(['auth', 'verified', 'role:super_admin,admin,care_manager,supervisor,care_worker'])->name('patients.mar.save');
+
+Route::post('/patients/{patient}/mar/{mar}/clear-today', function (string $patient, string $mar) {
+    $patientRecord = Patient::query()->where('url_key', $patient)->firstOrFail();
+    $today = now()->toDateString();
+
+    $administrations = MedicationAdministration::query()
+        ->where('patient_id', $patientRecord->id)
+        ->where(function ($query) use ($today) {
+            $query->whereDate('administered_at', $today)
+                ->orWhere(function ($inner) use ($today) {
+                    $inner->whereNull('administered_at')
+                        ->whereDate('created_at', $today);
+                });
+        })
+        ->with('medication')
+        ->get();
+
+    $cleared = 0;
+    foreach ($administrations as $administration) {
+        $medication = $administration->medication;
+        if ($medication?->is_controlled && $administration->status === 'given') {
+            record_medication_stock_movement(
+                $medication,
+                MedicationStockMovement::TYPE_ADJUSTMENT,
+                1,
+                request()->user(),
+                'Reversed controlled dose — cleared today\'s MAR #'.$administration->id,
+            );
+        }
+        $administration->delete();
+        $cleared++;
+    }
+
+    MedicationReminder::query()
+        ->where('patient_id', $patientRecord->id)
+        ->where('dismissed', true)
+        ->whereDate('due_at', $today)
+        ->update([
+            'dismissed' => false,
+            'dismissed_by_user_id' => null,
+        ]);
+
+    AuditTrail::record(
+        'deleted',
+        'Cleared today\'s eMAR entries for '.$patientRecord->name.' ('.$mar.')',
+        'medication',
+        $patient.':'.$mar,
+        $patientRecord->name,
+        ['cleared_count' => $cleared, 'date' => $today],
+        ['patient_url_key' => $patient],
+        request(),
+    );
+
+    return redirect()
+        ->route('patients.mar.show', ['patient' => $patient, 'mar' => $mar])
+        ->with('success', $cleared > 0
+            ? "Cleared {$cleared} administration record(s) for today. Rows will show as Due."
+            : 'No administration records found for today.');
+})->middleware(['auth', 'verified', 'role:super_admin,admin,care_manager,supervisor'])->name('patients.mar.clear-today');
+
+Route::post('/patients/{patient}/medications/{medication}/deactivate', function (string $patient, PatientMedication $medication) {
+    $patientRecord = Patient::query()->where('url_key', $patient)->firstOrFail();
+    abort_unless($medication->patient_id === $patientRecord->id, 404);
+
+    $mar = request('mar');
+    $redirect = (is_string($mar) && $mar !== '')
+        ? redirect()->route('patients.mar.show', ['patient' => $patient, 'mar' => $mar])
+        : redirect()->route('patients.mar', $patient);
+
+    if (!$medication->active) {
+        return $redirect->with('success', "'{$medication->name}' is already inactive.");
+    }
+
+    $medication->update(['active' => false]);
+
+    AuditTrail::record(
+        'updated',
+        "Deactivated medication '{$medication->name}' for {$patientRecord->name}",
+        'medication',
+        (string) $medication->id,
+        $medication->name,
+        ['active' => false],
+        ['patient_url_key' => $patient],
+        request(),
+    );
+
+    return $redirect->with('success', "'{$medication->name}' removed from active eMAR.");
+})->middleware(['auth', 'verified', 'role:super_admin,admin,care_manager,supervisor'])->name('patients.medications.deactivate');
+
+Route::post('/patients/{patient}/medications/{medication}/reactivate', function (string $patient, PatientMedication $medication) {
+    $patientRecord = Patient::query()->where('url_key', $patient)->firstOrFail();
+    abort_unless($medication->patient_id === $patientRecord->id, 404);
+
+    $mar = request('mar');
+    $redirect = (is_string($mar) && $mar !== '')
+        ? redirect()->route('patients.mar.show', ['patient' => $patient, 'mar' => $mar])
+        : redirect()->route('patients.mar', $patient);
+
+    if ($medication->active) {
+        return $redirect->with('success', "'{$medication->name}' is already active on the eMAR.");
+    }
+
+    $medication->update(['active' => true]);
+
+    AuditTrail::record(
+        'updated',
+        "Reactivated medication '{$medication->name}' for {$patientRecord->name}",
+        'medication',
+        (string) $medication->id,
+        $medication->name,
+        ['active' => true],
+        ['patient_url_key' => $patient],
+        request(),
+    );
+
+    return $redirect->with('success', "'{$medication->name}' restored to the active eMAR.");
+})->middleware(['auth', 'verified', 'role:super_admin,admin,care_manager,supervisor'])->name('patients.medications.reactivate');
+
+Route::post('/patients/{patient}/medications/{medication}/stock', function (string $patient, PatientMedication $medication) {
+    $patientRecord = Patient::query()->where('url_key', $patient)->firstOrFail();
+    abort_unless($medication->patient_id === $patientRecord->id && $medication->is_controlled, 404);
+
+    $validated = request()->validate([
+        'movement_type' => ['required', 'string', 'in:'.implode(',', [
+            MedicationStockMovement::TYPE_RECEIPT,
+            MedicationStockMovement::TYPE_ADJUSTMENT,
+            MedicationStockMovement::TYPE_DESTRUCTION,
+            MedicationStockMovement::TYPE_RECONCILIATION,
+        ])],
+        'quantity' => ['required', 'numeric', 'not_in:0'],
+        'notes' => ['nullable', 'string', 'max:2000'],
+    ]);
+
+    $quantity = (float) $validated['quantity'];
+    $type = $validated['movement_type'];
+
+    if (in_array($type, [MedicationStockMovement::TYPE_RECEIPT, MedicationStockMovement::TYPE_RECONCILIATION], true) && $quantity < 0) {
+        throw ValidationException::withMessages(['quantity' => 'Quantity must be positive for receipts and reconciliation.']);
+    }
+
+    $delta = in_array($type, [MedicationStockMovement::TYPE_ADMINISTRATION, MedicationStockMovement::TYPE_DESTRUCTION], true)
+        ? -abs($quantity)
+        : $quantity;
+
+    record_medication_stock_movement(
+        $medication,
+        $type,
+        $delta,
+        request()->user(),
+        trim((string) ($validated['notes'] ?? '')) ?: null,
+    );
+
+    if ($type === MedicationStockMovement::TYPE_RECONCILIATION) {
+        MedicationStock::query()
+            ->where('patient_medication_id', $medication->id)
+            ->update([
+                'reconciled_at' => now(),
+                'reconciled_by_user_id' => request()->user()?->id,
+            ]);
+    }
+
+    AuditTrail::record(
+        'updated',
+        'Updated controlled drug stock for '.$medication->name,
+        'medication_stock',
+        (string) $medication->id,
+        $patientRecord->name,
+        ['movement_type' => $type, 'quantity' => $quantity],
+        ['patient_url_key' => $patient],
+    );
+
+    return redirect()->back()->with('success', 'Stock updated.');
+})->middleware(['auth', 'verified', 'role:super_admin,admin,care_manager,supervisor'])->name('patients.medications.stock');
 
 Route::post('/patients/{patient}/medications', function (string $patient) {
     $record = Patient::query()->where('url_key', $patient)->firstOrFail();
@@ -2111,6 +5477,13 @@ Route::post('/patients/{patient}/medications', function (string $patient) {
                 ]);
             }
         }
+    }
+
+    if ($medication->is_controlled) {
+        MedicationStock::query()->firstOrCreate(
+            ['patient_medication_id' => $medication->id],
+            ['balance' => 0, 'unit' => 'doses'],
+        );
     }
 
     AuditTrail::record(
@@ -2254,6 +5627,7 @@ Route::get('/patients/{patient}/shift-check-in', function (string $patient) {
         ->where('end_at', '>=', now())
         ->orderBy('start_at')
         ->first();
+    $activeVisit = resolve_patient_schedule_for_ecm($patientRecord, null);
     $medicationItems = PatientMedication::query()
         ->where('patient_id', $patientRecord->id)
         ->where('active', true)
@@ -2285,9 +5659,12 @@ Route::get('/patients/{patient}/shift-check-in', function (string $patient) {
         $highRiskFlags[] = 'RAG Amber - Monitor closely during visit.';
     }
 
+    $visitTasks = $activeVisit ? load_schedule_visit_tasks($activeVisit) : [];
+
     return Inertia::render('ShiftCheckIn', [
         'patientSlug' => $patient,
         'initialSnapshot' => $snapshot?->data ?? [],
+        'visitTasks' => $visitTasks,
         'patientContext' => [
             'name' => $patientRecord->name,
             'location' => $patientRecord->address ?: 'Location not provided',
@@ -2298,6 +5675,7 @@ Route::get('/patients/{patient}/shift-check-in', function (string $patient) {
             'scheduledWindow' => $nextVisit
                 ? optional($nextVisit->start_at)->format('H:i').' - '.optional($nextVisit->end_at)->format('H:i')
                 : 'Not scheduled',
+            'activeScheduleId' => $activeVisit?->id,
             'highRiskFlags' => !empty($highRiskFlags) ? $highRiskFlags : ['No high-risk flags recorded.'],
         ],
         'medicationItems' => $medicationItems,
@@ -2309,12 +5687,183 @@ Route::get('/patients/{patient}/shift-check-in', function (string $patient) {
     ]);
 })->middleware(['auth', 'verified'])->name('patients.shift-checkin');
 
+Route::post('/patients/{patient}/shift-check-in/session/start', function (string $patient) {
+    $patientRecord = Patient::query()->where('url_key', $patient)->firstOrFail();
+    $payload = request()->validate([
+        'schedule_id' => ['nullable', 'integer'],
+        'started_at' => ['nullable', 'date'],
+        'gps_latitude' => ['nullable', 'numeric', 'between:-90,90'],
+        'gps_longitude' => ['nullable', 'numeric', 'between:-180,180'],
+    ]);
+
+    $schedule = resolve_patient_schedule_for_ecm($patientRecord, isset($payload['schedule_id']) ? (int) $payload['schedule_id'] : null);
+
+    if (!$schedule) {
+        return response()->json(['ok' => false, 'message' => 'No schedule found for this patient.'], 422);
+    }
+
+    $startedAt = isset($payload['started_at']) ? Carbon::parse((string) $payload['started_at']) : now();
+    $distance = ecm_distance_metres(
+        $patientRecord->latitude ? (float) $patientRecord->latitude : null,
+        $patientRecord->longitude ? (float) $patientRecord->longitude : null,
+        isset($payload['gps_latitude']) ? (float) $payload['gps_latitude'] : null,
+        isset($payload['gps_longitude']) ? (float) $payload['gps_longitude'] : null
+    );
+    $lateByMinutes = $startedAt->greaterThan($schedule->start_at) ? $schedule->start_at->diffInMinutes($startedAt) : 0;
+
+    $schedule->update([
+        'checked_in_at' => $startedAt,
+        'check_in_latitude' => $payload['gps_latitude'] ?? null,
+        'check_in_longitude' => $payload['gps_longitude'] ?? null,
+        'check_in_distance_metres' => $distance,
+        'late_by_minutes' => $lateByMinutes > 0 ? $lateByMinutes : null,
+    ]);
+
+    seed_schedule_visit_tasks($schedule);
+
+    AuditTrail::record(
+        'updated',
+        'Recorded shift check-in for '.$patientRecord->name,
+        'schedule',
+        (string) $schedule->id,
+        $patientRecord->name,
+        [
+            'checked_in_at' => $startedAt->toIso8601String(),
+            'late_by_minutes' => $lateByMinutes,
+            'check_in_distance_metres' => $distance,
+        ],
+        ['patient_url_key' => $patientRecord->url_key],
+    );
+
+    return response()->json([
+        'ok' => true,
+        'schedule_id' => $schedule->id,
+        'late_by_minutes' => $lateByMinutes,
+        'visit_tasks' => load_schedule_visit_tasks($schedule),
+    ]);
+})->middleware(['auth', 'verified'])->name('patients.shift-checkin.session.start');
+
+Route::post('/schedules/{schedule}/visit-tasks', function (PatientSchedule $schedule) {
+    $payload = request()->validate([
+        'tasks' => ['required', 'array', 'min:1'],
+        'tasks.*.id' => ['required', 'integer'],
+        'tasks.*.outcome' => ['required', 'string', 'in:'.implode(',', ScheduleVisitTask::OUTCOMES)],
+        'tasks.*.notes' => ['nullable', 'string', 'max:2000'],
+    ]);
+
+    $user = request()->user();
+    $taskIds = collect($payload['tasks'])->pluck('id')->map(fn ($id) => (int) $id)->all();
+    $tasksById = ScheduleVisitTask::query()
+        ->where('patient_schedule_id', $schedule->id)
+        ->whereIn('id', $taskIds)
+        ->get()
+        ->keyBy('id');
+
+    if ($tasksById->count() !== count($taskIds)) {
+        return response()->json(['ok' => false, 'message' => 'One or more tasks are invalid for this visit.'], 422);
+    }
+
+    $recorded = [];
+    foreach ($payload['tasks'] as $item) {
+        $task = $tasksById->get((int) $item['id']);
+        if (!$task) {
+            continue;
+        }
+
+        $notes = trim((string) ($item['notes'] ?? ''));
+        $task->update([
+            'outcome' => $item['outcome'],
+            'notes' => $notes !== '' ? $notes : null,
+            'completed_at' => now(),
+            'completed_by_user_id' => $user?->id,
+        ]);
+
+        $recorded[] = [
+            'task_key' => $task->task_key,
+            'outcome' => $task->outcome,
+        ];
+    }
+
+    $patientName = $schedule->patient?->name ?? 'Unknown';
+    AuditTrail::record(
+        'updated',
+        'Recorded visit task outcomes for '.$patientName,
+        'schedule',
+        (string) $schedule->id,
+        $patientName,
+        ['tasks' => $recorded],
+        ['patient_url_key' => $schedule->patient?->url_key],
+    );
+
+    return response()->json([
+        'ok' => true,
+        'visit_tasks' => load_schedule_visit_tasks($schedule),
+    ]);
+})->middleware(['auth', 'verified'])->name('schedules.visit-tasks.store');
+
+Route::post('/patients/{patient}/shift-check-in/session/end', function (string $patient) {
+    $patientRecord = Patient::query()->where('url_key', $patient)->firstOrFail();
+    $payload = request()->validate([
+        'schedule_id' => ['nullable', 'integer'],
+        'ended_at' => ['nullable', 'date'],
+        'gps_latitude' => ['nullable', 'numeric', 'between:-90,90'],
+        'gps_longitude' => ['nullable', 'numeric', 'between:-180,180'],
+        'reason' => ['nullable', 'string', 'max:1000'],
+    ]);
+
+    $schedule = resolve_patient_schedule_for_ecm($patientRecord, isset($payload['schedule_id']) ? (int) $payload['schedule_id'] : null);
+
+    if (!$schedule) {
+        return response()->json(['ok' => false, 'message' => 'No schedule found for this patient.'], 422);
+    }
+
+    $endedAt = isset($payload['ended_at']) ? Carbon::parse((string) $payload['ended_at']) : now();
+    $distance = ecm_distance_metres(
+        $patientRecord->latitude ? (float) $patientRecord->latitude : null,
+        $patientRecord->longitude ? (float) $patientRecord->longitude : null,
+        isset($payload['gps_latitude']) ? (float) $payload['gps_latitude'] : null,
+        isset($payload['gps_longitude']) ? (float) $payload['gps_longitude'] : null
+    );
+    $leftEarlyByMinutes = $endedAt->lessThan($schedule->end_at) ? $endedAt->diffInMinutes($schedule->end_at) : 0;
+
+    $schedule->update([
+        'checked_out_at' => $endedAt,
+        'check_out_latitude' => $payload['gps_latitude'] ?? null,
+        'check_out_longitude' => $payload['gps_longitude'] ?? null,
+        'check_out_distance_metres' => $distance,
+        'left_early_by_minutes' => $leftEarlyByMinutes > 0 ? $leftEarlyByMinutes : null,
+        'notes' => trim((string) ($payload['reason'] ?? '')) !== '' ? trim((string) $payload['reason']) : $schedule->notes,
+        'status' => $schedule->status ?: 'completed',
+    ]);
+
+    AuditTrail::record(
+        'updated',
+        'Recorded shift check-out for '.$patientRecord->name,
+        'schedule',
+        (string) $schedule->id,
+        $patientRecord->name,
+        [
+            'checked_out_at' => $endedAt->toIso8601String(),
+            'left_early_by_minutes' => $leftEarlyByMinutes,
+            'check_out_distance_metres' => $distance,
+        ],
+        ['patient_url_key' => $patientRecord->url_key],
+    );
+
+    return response()->json(['ok' => true, 'schedule_id' => $schedule->id, 'left_early_by_minutes' => $leftEarlyByMinutes]);
+})->middleware(['auth', 'verified'])->name('patients.shift-checkin.session.end');
+
 Route::post('/patients/{patient}/vitals', function (string $patient) {
     $patientRecord = Patient::query()->where('url_key', $patient)->firstOrFail();
     $payload = request()->validate([
         'heart_rate' => ['required', 'integer', 'between:20,260'],
         'bp_systolic' => ['required', 'integer', 'between:40,300'],
+        'bp_diastolic' => ['nullable', 'integer', 'between:40,200'],
         'spo2' => ['required', 'integer', 'between:50,100'],
+        'temperature_celsius' => ['nullable', 'numeric', 'between:30,45'],
+        'blood_glucose_mmol' => ['nullable', 'numeric', 'between:1,35'],
+        'weight_kg' => ['nullable', 'numeric', 'between:1,500'],
+        'pain_score' => ['nullable', 'integer', 'between:0,10'],
         'other_observation' => ['nullable', 'string', 'max:5000'],
     ]);
 
@@ -2324,11 +5873,18 @@ Route::post('/patients/{patient}/vitals', function (string $patient) {
         'patient_id' => $patientRecord->id,
         'heart_rate' => (int) $payload['heart_rate'],
         'bp_systolic' => (int) $payload['bp_systolic'],
+        'bp_diastolic' => isset($payload['bp_diastolic']) ? (int) $payload['bp_diastolic'] : null,
         'spo2' => (int) $payload['spo2'],
+        'temperature_celsius' => $payload['temperature_celsius'] ?? null,
+        'blood_glucose_mmol' => $payload['blood_glucose_mmol'] ?? null,
+        'weight_kg' => $payload['weight_kg'] ?? null,
+        'pain_score' => $payload['pain_score'] ?? null,
         'other_observation' => $otherObservation !== '' ? $otherObservation : null,
         'recorded_at' => now(),
         'recorded_by_user_id' => request()->user()?->id,
     ]);
+
+    $thresholdAlerts = evaluate_vital_threshold_alerts($vital);
 
     AuditTrail::record(
         'created',
@@ -2339,13 +5895,113 @@ Route::post('/patients/{patient}/vitals', function (string $patient) {
         [
             'heart_rate' => $vital->heart_rate,
             'bp_systolic' => $vital->bp_systolic,
+            'bp_diastolic' => $vital->bp_diastolic,
             'spo2' => $vital->spo2,
+            'temperature_celsius' => $vital->temperature_celsius,
+            'blood_glucose_mmol' => $vital->blood_glucose_mmol,
+            'weight_kg' => $vital->weight_kg,
+            'pain_score' => $vital->pain_score,
+            'threshold_alerts' => $thresholdAlerts,
         ],
         ['patient_url_key' => $patient],
     );
 
-    return redirect()->back()->with('success', 'Clinical observation recorded successfully.');
+    $flashMessage = 'Clinical observation recorded successfully.';
+    if (!empty($thresholdAlerts)) {
+        $flashMessage .= ' Alert: '.implode(' ', array_slice($thresholdAlerts, 0, 2));
+    }
+
+    return redirect()->back()->with('success', $flashMessage);
 })->middleware(['auth', 'verified', 'role:super_admin,admin,care_manager,supervisor,care_worker'])->name('patients.vitals.store');
+
+Route::post('/patients/{patient}/fluid-records', function (string $patient) {
+    $patientRecord = Patient::query()->where('url_key', $patient)->firstOrFail();
+    $payload = request()->validate([
+        'fluid_intake_ml' => ['nullable', 'integer', 'between:0,5000'],
+        'fluid_output_ml' => ['nullable', 'integer', 'between:0,5000'],
+        'fluid_type' => ['nullable', 'string', 'max:64'],
+        'notes' => ['nullable', 'string', 'max:2000'],
+    ]);
+
+    $intake = $payload['fluid_intake_ml'] ?? null;
+    $output = $payload['fluid_output_ml'] ?? null;
+    if ($intake === null && $output === null) {
+        throw ValidationException::withMessages([
+            'fluid_intake_ml' => 'Enter fluid intake and/or output in ml.',
+        ]);
+    }
+
+    $record = PatientFluidRecord::query()->create([
+        'patient_id' => $patientRecord->id,
+        'recorded_by_user_id' => request()->user()?->id,
+        'recorded_at' => now(),
+        'fluid_intake_ml' => $intake,
+        'fluid_output_ml' => $output,
+        'fluid_type' => trim((string) ($payload['fluid_type'] ?? '')) ?: null,
+        'notes' => trim((string) ($payload['notes'] ?? '')) ?: null,
+    ]);
+
+    AuditTrail::record(
+        'created',
+        'Recorded fluid balance for '.$patientRecord->name,
+        'fluid_record',
+        (string) $record->id,
+        $patientRecord->name,
+        ['fluid_intake_ml' => $intake, 'fluid_output_ml' => $output],
+        ['patient_url_key' => $patient],
+    );
+
+    $flashMessage = 'Fluid record saved.';
+    foreach (evaluate_fluid_balance_alerts($patientRecord) as $alert) {
+        $flashMessage .= ' '.$alert;
+    }
+
+    return redirect()
+        ->route('patients.observations', $patientRecord->url_key)
+        ->with('success', $flashMessage);
+})->middleware(['auth', 'verified', 'role:super_admin,admin,care_manager,supervisor,care_worker'])->name('patients.fluid.store');
+
+Route::post('/patients/{patient}/bowel-records', function (string $patient) {
+    $patientRecord = Patient::query()->where('url_key', $patient)->firstOrFail();
+    $payload = request()->validate([
+        'bowel_opened' => ['nullable', 'boolean'],
+        'bristol_type' => ['nullable', 'integer', 'between:1,7'],
+        'continence_status' => ['nullable', 'string', 'max:64'],
+        'notes' => ['nullable', 'string', 'max:2000'],
+    ]);
+
+    $bristol = $payload['bristol_type'] ?? null;
+    $notes = trim((string) ($payload['notes'] ?? ''));
+    if ($bristol === null && $notes === '') {
+        throw ValidationException::withMessages([
+            'bristol_type' => 'Select a Bristol stool type or enter notes.',
+        ]);
+    }
+
+    PatientBowelRecord::query()->create([
+        'patient_id' => $patientRecord->id,
+        'recorded_by_user_id' => request()->user()?->id,
+        'recorded_at' => now(),
+        'bowel_opened' => (bool) ($payload['bowel_opened'] ?? true),
+        'bristol_type' => $bristol,
+        'continence_status' => trim((string) ($payload['continence_status'] ?? '')) ?: null,
+        'notes' => $notes !== '' ? $notes : null,
+    ]);
+
+    AuditTrail::record(
+        'created',
+        'Recorded bowel chart entry for '.$patientRecord->name,
+        'bowel_record',
+        (string) $patientRecord->id,
+        $patientRecord->name,
+        ['bristol_type' => $bristol],
+        ['patient_url_key' => $patient],
+    );
+
+    return redirect()
+        ->route('patients.observations', $patientRecord->url_key)
+        ->with('success', 'Bowel chart entry saved.');
+})->middleware(['auth', 'verified', 'role:super_admin,admin,care_manager,supervisor,care_worker'])->name('patients.bowel.store');
 
 Route::get('/patients/{patient}/logs', function (string $patient) {
     abort_unless(AuditTrail::canViewReports(request()->user()), 403, 'You do not have permission to view audit history.');
@@ -2777,6 +6433,44 @@ Route::post('/form-snapshots/{formKey}', function (string $formKey) {
     $isIncident = str_starts_with($formKey, 'incident:');
     $isSubmitted = ($payload['data']['status'] ?? null) === 'Submitted';
 
+    if ($isIncident && $isSubmitted && $patientUrlKey) {
+        $patient = Patient::query()->where('url_key', $patientUrlKey)->first();
+        if ($patient) {
+            $incident = record_patient_incident_submission($patient, $payload['data'], request()->user());
+            FormSnapshot::query()->where('form_key', $formKey)->update([
+                'data' => ['status' => 'Draft'],
+            ]);
+            AuditTrail::record(
+                'created',
+                'Incident '.$incident->reference.' submitted for '.$patient->name,
+                'incident',
+                (string) $incident->id,
+                $patient->name,
+                ['reference' => $incident->reference],
+                ['patient_url_key' => $patientUrlKey],
+            );
+
+            $flash = ['success' => 'Incident submitted as '.$incident->reference.'.'];
+            if (incident_involves_personal_data($payload['data'])) {
+                $flash['suggest_gdpr_breach'] = true;
+                $flash['gdprBreachPrefill'] = [
+                    'patient_id' => $patient->id,
+                    'subject_name' => $patient->name,
+                    'request_details' => 'Potential personal data breach linked to incident '.$incident->reference
+                        .'. Review whether notification to the ICO or individuals is required within 72 hours.',
+                    'breach_categories' => 'Incident-related',
+                    'discovered_at' => now()->format('Y-m-d\TH:i'),
+                    'incident_reference' => $incident->reference,
+                    'incident_id' => $incident->id,
+                ];
+            }
+
+            return redirect()
+                ->route('patients.incidents.create', $patientUrlKey)
+                ->with($flash);
+        }
+    }
+
     $isShiftCheckin = str_starts_with($formKey, 'shift-checkin:');
 
     if ($isIncident && $patientUrlKey) {
@@ -2882,6 +6576,7 @@ Route::get('/reports/medications', function () {
     $givenCount = $administrations->where('status', 'given')->count();
     $refusedCount = $administrations->where('status', 'refused')->count();
     $omittedCount = $administrations->where('status', 'omitted')->count();
+    $delayedCount = $administrations->where('status', 'delayed')->count();
     $selfAdminCount = $administrations->where('status', 'self_administered')->count();
     $controlledCount = $administrations->filter(fn ($a) => $a->medication?->is_controlled)->count();
     $scheduledCount = $administrations->whereNotNull('scheduled_for')->count();
@@ -2923,6 +6618,7 @@ Route::get('/reports/medications', function () {
             'given' => $givenCount,
             'refused' => $refusedCount,
             'omitted' => $omittedCount,
+            'delayed' => $delayedCount,
             'selfAdministered' => $selfAdminCount,
             'controlled' => $controlledCount,
             'complianceRate' => $complianceRate,
@@ -3027,6 +6723,8 @@ Route::get('/reports/schedules', function () {
     $upcomingShifts = $schedules->filter(fn ($s) => $s->start_at->isFuture() && !$s->status)->count();
     $overdueShifts = $schedules->filter(fn ($s) => $s->end_at->isPast() && !$s->status)->count();
     $inProgressShifts = $totalShifts - $completedShifts - $missedShifts - $upcomingShifts - $overdueShifts;
+    $lateStarts = $schedules->filter(fn ($s) => (int) ($s->late_by_minutes ?? 0) > 0)->count();
+    $earlyLeaves = $schedules->filter(fn ($s) => (int) ($s->left_early_by_minutes ?? 0) > 0)->count();
 
     $rescheduledCount = AuditEvent::query()
         ->where('subject_type', 'schedule')
@@ -3069,6 +6767,8 @@ Route::get('/reports/schedules', function () {
             'time' => $s->start_at->format('H:i').' - '.$s->end_at->format('H:i'),
             'duration' => $s->start_at->diffInMinutes($s->end_at),
             'status' => $displayStatus,
+            'lateByMinutes' => (int) ($s->late_by_minutes ?? 0),
+            'leftEarlyByMinutes' => (int) ($s->left_early_by_minutes ?? 0),
         ];
     })->values();
 
@@ -3082,6 +6782,8 @@ Route::get('/reports/schedules', function () {
             'upcomingShifts' => $upcomingShifts,
             'inProgressShifts' => $inProgressShifts,
             'overdueShifts' => $overdueShifts,
+            'lateStarts' => $lateStarts,
+            'earlyLeaves' => $earlyLeaves,
             'rescheduledShifts' => $rescheduledCount,
             'totalHours' => round($totalHours, 1),
         ],
@@ -3119,7 +6821,7 @@ Route::get('/reports/schedules/export/csv', function () {
             return;
         }
 
-        fputcsv($output, ['Date', 'Start', 'End', 'Patient', 'Carer', 'Duration (mins)', 'Status']);
+        fputcsv($output, ['Date', 'Start', 'End', 'Patient', 'Carer', 'Duration (mins)', 'Status', 'Late (mins)', 'Left Early (mins)']);
         foreach ($schedules as $s) {
             fputcsv($output, [
                 $s->start_at?->format('d M Y'),
@@ -3129,6 +6831,8 @@ Route::get('/reports/schedules/export/csv', function () {
                 $s->assignedUser?->name ?? '-',
                 $s->start_at && $s->end_at ? $s->start_at->diffInMinutes($s->end_at) : 0,
                 $s->status ?? 'in_progress',
+                $s->late_by_minutes ?? 0,
+                $s->left_early_by_minutes ?? 0,
             ]);
         }
         fclose($output);
@@ -3160,6 +6864,164 @@ Route::get('/reports/schedules/export/pdf', function () {
 
     return $pdf->download('Allocare-schedule-report-'.now()->format('Ymd-His').'.pdf');
 })->middleware(['auth', 'verified'])->name('reports.schedules.export.pdf');
+
+Route::get('/reports/ecm-commissioner', function () {
+    if (! AuditTrail::canViewReports(request()->user())) {
+        abort(403);
+    }
+
+    $fromParam = request('from');
+    $toParam = request('to');
+    $from = $fromParam ? Carbon::parse($fromParam)->startOfDay() : now()->subDays(30)->startOfDay();
+    $to = $toParam ? Carbon::parse($toParam)->endOfDay() : now()->endOfDay();
+
+    $schedules = PatientSchedule::query()
+        ->whereBetween('start_at', [$from, $to])
+        ->where(function ($query) {
+            $query
+                ->whereNotNull('checked_in_at')
+                ->orWhereNotNull('checked_out_at')
+                ->orWhereNotNull('check_in_distance_metres')
+                ->orWhereNotNull('check_out_distance_metres')
+                ->orWhereNotNull('late_by_minutes')
+                ->orWhereNotNull('left_early_by_minutes');
+        })
+        ->with(['patient:id,name', 'assignedUser:id,name'])
+        ->orderByDesc('start_at')
+        ->get();
+
+    $rows = $schedules->map(function (PatientSchedule $schedule) {
+        $scheduledMinutes = ($schedule->start_at && $schedule->end_at)
+            ? $schedule->start_at->diffInMinutes($schedule->end_at)
+            : 0;
+        $actualMinutes = ($schedule->checked_in_at && $schedule->checked_out_at)
+            ? $schedule->checked_in_at->diffInMinutes($schedule->checked_out_at)
+            : null;
+        $evidenceStatus = ($schedule->checked_in_at && $schedule->checked_out_at)
+            ? 'Complete'
+            : (($schedule->checked_in_at || $schedule->checked_out_at) ? 'Partial' : 'Missing');
+
+        return [
+            'id' => $schedule->id,
+            'scheduledDate' => optional($schedule->start_at)->format('d M Y'),
+            'scheduledWindow' => optional($schedule->start_at)->format('H:i').' - '.optional($schedule->end_at)->format('H:i'),
+            'patient' => $schedule->patient?->name ?? '-',
+            'carer' => $schedule->assignedUser?->name ?? '-',
+            'checkedInAt' => optional($schedule->checked_in_at)->format('d M Y H:i'),
+            'checkedOutAt' => optional($schedule->checked_out_at)->format('d M Y H:i'),
+            'scheduledMinutes' => $scheduledMinutes,
+            'actualMinutes' => $actualMinutes,
+            'lateByMinutes' => (int) ($schedule->late_by_minutes ?? 0),
+            'leftEarlyByMinutes' => (int) ($schedule->left_early_by_minutes ?? 0),
+            'checkInDistanceMetres' => $schedule->check_in_distance_metres,
+            'checkOutDistanceMetres' => $schedule->check_out_distance_metres,
+            'checkInCoords' => ($schedule->check_in_latitude !== null && $schedule->check_in_longitude !== null)
+                ? number_format((float) $schedule->check_in_latitude, 6).', '.number_format((float) $schedule->check_in_longitude, 6)
+                : null,
+            'checkOutCoords' => ($schedule->check_out_latitude !== null && $schedule->check_out_longitude !== null)
+                ? number_format((float) $schedule->check_out_latitude, 6).', '.number_format((float) $schedule->check_out_longitude, 6)
+                : null,
+            'evidenceStatus' => $evidenceStatus,
+        ];
+    })->values();
+
+    return Inertia::render('ReportsEcmCommissioner', [
+        'rows' => $rows,
+        'stats' => [
+            'totalRows' => $rows->count(),
+            'completeEvidence' => $rows->where('evidenceStatus', 'Complete')->count(),
+            'partialEvidence' => $rows->where('evidenceStatus', 'Partial')->count(),
+            'missingEvidence' => $rows->where('evidenceStatus', 'Missing')->count(),
+        ],
+        'filters' => [
+            'from' => $from->format('Y-m-d'),
+            'to' => $to->format('Y-m-d'),
+        ],
+    ]);
+})->middleware(['auth', 'verified'])->name('reports.ecm-commissioner');
+
+Route::get('/reports/ecm-commissioner/export/csv', function () {
+    if (! AuditTrail::canViewReports(request()->user())) {
+        abort(403);
+    }
+
+    $fromParam = request('from');
+    $toParam = request('to');
+    $from = $fromParam ? Carbon::parse($fromParam)->startOfDay() : now()->subDays(30)->startOfDay();
+    $to = $toParam ? Carbon::parse($toParam)->endOfDay() : now()->endOfDay();
+
+    $schedules = PatientSchedule::query()
+        ->whereBetween('start_at', [$from, $to])
+        ->where(function ($query) {
+            $query
+                ->whereNotNull('checked_in_at')
+                ->orWhereNotNull('checked_out_at')
+                ->orWhereNotNull('check_in_distance_metres')
+                ->orWhereNotNull('check_out_distance_metres')
+                ->orWhereNotNull('late_by_minutes')
+                ->orWhereNotNull('left_early_by_minutes');
+        })
+        ->with(['patient:id,name', 'assignedUser:id,name'])
+        ->orderByDesc('start_at')
+        ->get();
+
+    $filename = 'Allocare-ecm-commissioner-attendance-evidence-'.now()->format('Ymd-His').'.csv';
+
+    return response()->streamDownload(function () use ($schedules): void {
+        $output = fopen('php://output', 'w');
+        if (! $output) {
+            return;
+        }
+
+        fputcsv($output, [
+            'Shift ID',
+            'Scheduled Date',
+            'Scheduled Start',
+            'Scheduled End',
+            'Patient',
+            'Carer',
+            'Check-In At',
+            'Check-Out At',
+            'Late (mins)',
+            'Left Early (mins)',
+            'Check-In Distance (m)',
+            'Check-Out Distance (m)',
+            'Check-In Coordinates',
+            'Check-Out Coordinates',
+            'Evidence Status',
+        ]);
+
+        foreach ($schedules as $schedule) {
+            $evidenceStatus = ($schedule->checked_in_at && $schedule->checked_out_at)
+                ? 'Complete'
+                : (($schedule->checked_in_at || $schedule->checked_out_at) ? 'Partial' : 'Missing');
+
+            fputcsv($output, [
+                $schedule->id,
+                $schedule->start_at?->format('d M Y'),
+                $schedule->start_at?->format('H:i'),
+                $schedule->end_at?->format('H:i'),
+                $schedule->patient?->name ?? '-',
+                $schedule->assignedUser?->name ?? '-',
+                $schedule->checked_in_at?->format('d M Y H:i'),
+                $schedule->checked_out_at?->format('d M Y H:i'),
+                $schedule->late_by_minutes ?? 0,
+                $schedule->left_early_by_minutes ?? 0,
+                $schedule->check_in_distance_metres ?? '',
+                $schedule->check_out_distance_metres ?? '',
+                ($schedule->check_in_latitude !== null && $schedule->check_in_longitude !== null)
+                    ? number_format((float) $schedule->check_in_latitude, 6).', '.number_format((float) $schedule->check_in_longitude, 6)
+                    : '',
+                ($schedule->check_out_latitude !== null && $schedule->check_out_longitude !== null)
+                    ? number_format((float) $schedule->check_out_latitude, 6).', '.number_format((float) $schedule->check_out_longitude, 6)
+                    : '',
+                $evidenceStatus,
+            ]);
+        }
+
+        fclose($output);
+    }, $filename, ['Content-Type' => 'text/csv']);
+})->middleware(['auth', 'verified'])->name('reports.ecm-commissioner.export.csv');
 
 if (! function_exists('build_compliance_training_report_payload')) {
     function build_compliance_training_report_payload(): array
@@ -3456,75 +7318,54 @@ Route::get('/reports/incidents', function () {
         abort(403);
     }
 
-    $incidents = FormSnapshot::query()
-        ->where('form_key', 'like', 'incident:%')
-        ->orderByDesc('updated_at')
+    $incidents = PatientIncident::query()
+        ->with(['patient:id,name,url_key', 'reportedBy:id,name', 'investigation.incident'])
+        ->orderByDesc('submitted_at')
+        ->limit(500)
         ->get()
-        ->map(function ($snapshot) {
-            $data = $snapshot->data ?? [];
-            $patientUrlKey = str_replace('incident:', '', $snapshot->form_key);
-            $patient = Patient::query()->where('url_key', $patientUrlKey)->first();
-            $reporter = $snapshot->updated_by_user_id
-                ? User::find($snapshot->updated_by_user_id)
-                : null;
-
-            return [
-                'id' => $snapshot->id,
-                'title' => $data['incidentTitle'] ?? '-',
-                'patient_name' => $patient?->name ?? $patientUrlKey,
-                'patient_url_key' => $patientUrlKey,
-                'reporter' => $reporter?->name ?? ($data['reporterName'] ?? 'Unknown'),
-                'incident_date' => $data['incidentDate'] ?? $snapshot->updated_at->format('Y-m-d'),
-                'incident_time' => $data['incidentTime'] ?? '-',
-                'location' => $data['location'] ?? '-',
-                'tags' => $data['tags'] ?? ($data['selectedTags'] ?? []),
-                'status' => $data['status'] ?? 'Submitted',
-                'duration_minutes' => $data['durationMinutes'] ?? ($data['incidentDuration'] ?? null),
-                'submitted_at' => $snapshot->updated_at->format('d M Y H:i'),
-            ];
-        });
+        ->map(fn (PatientIncident $incident) => map_patient_incident_for_list($incident))
+        ->values();
 
     $totalIncidents = $incidents->count();
-    $submittedCount = $incidents->where('status', 'Submitted')->count();
-    $draftCount = $totalIncidents - $submittedCount;
+    $openInvestigations = $incidents->filter(fn ($row) => $row['investigation']
+        && !in_array($row['investigation']['status'], ['completed', 'closed'], true))->count();
+    $riddorOpen = $incidents->filter(fn ($row) => ($row['investigation']['riddorReportable'] ?? false)
+        && !($row['investigation']['riddorReportedAt'] ?? null))->count();
+    $safeguardingOpen = $incidents->filter(fn ($row) => ($row['investigation']['safeguardingConcern'] ?? false)
+        && !($row['investigation']['safeguardingReferralMade'] ?? false))->count();
     $byPatient = $incidents->groupBy('patient_name')->map->count()->sortByDesc(fn ($v) => $v);
 
     return Inertia::render('ReportsIncidents', [
-        'incidents' => $incidents->values(),
+        'incidents' => $incidents,
         'stats' => [
             'total' => $totalIncidents,
-            'submitted' => $submittedCount,
-            'drafts' => $draftCount,
+            'submitted' => $totalIncidents,
+            'drafts' => 0,
+            'openInvestigations' => $openInvestigations,
+            'riddorOpen' => $riddorOpen,
+            'safeguardingOpen' => $safeguardingOpen,
             'byPatient' => $byPatient,
         ],
+        'investigationStatusOptions' => IncidentInvestigation::STATUSES,
+        'riddorCategoryOptions' => collect(IncidentInvestigation::RIDDOR_CATEGORIES)
+            ->map(fn (string $cat) => [
+                'value' => $cat,
+                'label' => Str::of($cat)->replace('_', ' ')->title()->toString(),
+            ])
+            ->values(),
     ]);
 })->middleware(['auth', 'verified'])->name('reports.incidents');
 
 Route::get('/reports/incidents/export/csv', function () {
-    if (! AuditTrail::canViewReports(request()->user())) {
+    if (!AuditTrail::canViewReports(request()->user())) {
         abort(403);
     }
 
-    $incidents = FormSnapshot::query()
-        ->where('form_key', 'like', 'incident:%')
-        ->orderByDesc('updated_at')
+    $incidents = PatientIncident::query()
+        ->with(['patient:id,name', 'reportedBy:id,name', 'investigation'])
+        ->orderByDesc('submitted_at')
         ->get()
-        ->map(function ($snapshot) {
-            $data = $snapshot->data ?? [];
-            $patientUrlKey = str_replace('incident:', '', $snapshot->form_key);
-            $patient = Patient::query()->where('url_key', $patientUrlKey)->first();
-            $reporter = $snapshot->updated_by_user_id ? User::find($snapshot->updated_by_user_id) : null;
-
-            return [
-                'title' => $data['incidentTitle'] ?? '-',
-                'patient' => $patient?->name ?? $patientUrlKey,
-                'reporter' => $reporter?->name ?? ($data['reporterName'] ?? 'Unknown'),
-                'incident_date' => $data['incidentDate'] ?? $snapshot->updated_at->format('Y-m-d'),
-                'incident_time' => $data['incidentTime'] ?? '-',
-                'status' => $data['status'] ?? 'Submitted',
-                'submitted_at' => $snapshot->updated_at->format('d M Y H:i'),
-            ];
-        });
+        ->map(fn (PatientIncident $incident) => map_patient_incident_for_list($incident));
 
     $filename = 'Allocare-incident-report-'.now()->format('Ymd-His').'.csv';
     return response()->streamDownload(function () use ($incidents): void {
@@ -3533,15 +7374,19 @@ Route::get('/reports/incidents/export/csv', function () {
             return;
         }
 
-        fputcsv($output, ['Title', 'Patient', 'Reporter', 'Incident Date', 'Incident Time', 'Status', 'Submitted']);
+        fputcsv($output, ['Reference', 'Title', 'Patient', 'Reporter', 'Date', 'Time', 'Investigation', 'RIDDOR', 'Safeguarding', 'Submitted']);
         foreach ($incidents as $incident) {
+            $inv = $incident['investigation'] ?? [];
             fputcsv($output, [
+                $incident['reference'],
                 $incident['title'],
-                $incident['patient'],
+                $incident['patient_name'],
                 $incident['reporter'],
                 $incident['incident_date'],
                 $incident['incident_time'],
-                $incident['status'],
+                $inv['statusLabel'] ?? '-',
+                ($inv['riddorReportable'] ?? false) ? 'Yes' : 'No',
+                ($inv['safeguardingConcern'] ?? false) ? 'Yes' : 'No',
                 $incident['submitted_at'],
             ]);
         }
@@ -3549,32 +7394,90 @@ Route::get('/reports/incidents/export/csv', function () {
     }, $filename, ['Content-Type' => 'text/csv']);
 })->middleware(['auth', 'verified'])->name('reports.incidents.export.csv');
 
+Route::get('/reports/incidents/export/riddor.csv', function () {
+    if (!AuditTrail::canViewReports(request()->user())) {
+        abort(403);
+    }
+
+    $rows = PatientIncident::query()
+        ->whereHas('investigation', fn ($q) => $q->where('riddor_reportable', true))
+        ->with(['patient:id,name', 'investigation'])
+        ->orderByDesc('submitted_at')
+        ->get();
+
+    $filename = 'Allocare-riddor-register-'.now()->format('Ymd-His').'.csv';
+
+    return response()->streamDownload(function () use ($rows): void {
+        $output = fopen('php://output', 'w');
+        fputcsv($output, ['Reference', 'Patient', 'Incident date', 'Category', 'Reported at', 'HSE reference', 'Status']);
+        foreach ($rows as $incident) {
+            $inv = $incident->investigation;
+            fputcsv($output, [
+                $incident->reference,
+                $incident->patient?->name ?? '-',
+                $incident->incident_date?->format('Y-m-d') ?? '-',
+                $inv?->riddor_category ?? '-',
+                $inv?->riddor_reported_at?->format('d M Y H:i') ?? '-',
+                $inv?->riddor_reference ?? '-',
+                $inv?->investigation_status ?? '-',
+            ]);
+        }
+        fclose($output);
+    }, $filename, ['Content-Type' => 'text/csv']);
+})->middleware(['auth', 'verified'])->name('reports.incidents.export.riddor');
+
+Route::get('/reports/incidents/export/safeguarding.csv', function () {
+    if (!AuditTrail::canViewReports(request()->user())) {
+        abort(403);
+    }
+
+    $rows = PatientIncident::query()
+        ->whereHas('investigation', fn ($q) => $q->where('safeguarding_concern', true))
+        ->with(['patient:id,name', 'investigation'])
+        ->orderByDesc('submitted_at')
+        ->get();
+
+    $filename = 'Allocare-safeguarding-referrals-'.now()->format('Ymd-His').'.csv';
+
+    return response()->streamDownload(function () use ($rows): void {
+        $output = fopen('php://output', 'w');
+        fputcsv($output, ['Reference', 'Patient', 'Incident date', 'Referral made', 'Referral date', 'Authority', 'Reference', 'Status']);
+        foreach ($rows as $incident) {
+            $inv = $incident->investigation;
+            fputcsv($output, [
+                $incident->reference,
+                $incident->patient?->name ?? '-',
+                $incident->incident_date?->format('Y-m-d') ?? '-',
+                $inv?->safeguarding_referral_made ? 'Yes' : 'No',
+                $inv?->safeguarding_referral_at?->format('d M Y H:i') ?? '-',
+                $inv?->safeguarding_authority ?? '-',
+                $inv?->safeguarding_reference ?? '-',
+                $inv?->investigation_status ?? '-',
+            ]);
+        }
+        fclose($output);
+    }, $filename, ['Content-Type' => 'text/csv']);
+})->middleware(['auth', 'verified'])->name('reports.incidents.export.safeguarding');
+
 Route::get('/reports/incidents/export/pdf', function () {
     if (! AuditTrail::canViewReports(request()->user())) {
         abort(403);
     }
 
-    $incidents = FormSnapshot::query()
-        ->where('form_key', 'like', 'incident:%')
-        ->orderByDesc('updated_at')
+    $incidents = PatientIncident::query()
+        ->with(['patient:id,name', 'reportedBy:id,name'])
+        ->orderByDesc('submitted_at')
         ->limit(250)
         ->get()
-        ->map(function ($snapshot) {
-            $data = $snapshot->data ?? [];
-            $patientUrlKey = str_replace('incident:', '', $snapshot->form_key);
-            $patient = Patient::query()->where('url_key', $patientUrlKey)->first();
-            $reporter = $snapshot->updated_by_user_id ? User::find($snapshot->updated_by_user_id) : null;
-
-            return [
-                'title' => $data['incidentTitle'] ?? '-',
-                'patient' => $patient?->name ?? $patientUrlKey,
-                'reporter' => $reporter?->name ?? ($data['reporterName'] ?? 'Unknown'),
-                'incident_date' => $data['incidentDate'] ?? $snapshot->updated_at->format('Y-m-d'),
-                'incident_time' => $data['incidentTime'] ?? '-',
-                'status' => $data['status'] ?? 'Submitted',
-                'submitted_at' => $snapshot->updated_at->format('d M Y H:i'),
-            ];
-        });
+        ->map(fn (PatientIncident $incident) => [
+            'title' => $incident->incident_title ?? '-',
+            'patient' => $incident->patient?->name ?? '-',
+            'reporter' => $incident->reportedBy?->name ?? '-',
+            'incident_date' => $incident->incident_date?->format('Y-m-d') ?? '-',
+            'incident_time' => $incident->incident_time ?? '-',
+            'status' => 'Submitted',
+            'submitted_at' => $incident->submitted_at->format('d M Y H:i'),
+        ]);
 
     $pdf = \Barryvdh\DomPDF\Facade\Pdf::loadView('reports.incidents-pdf', [
         'incidents' => $incidents,
@@ -3583,50 +7486,100 @@ Route::get('/reports/incidents/export/pdf', function () {
     return $pdf->download('Allocare-incident-report-'.now()->format('Ymd-His').'.pdf');
 })->middleware(['auth', 'verified'])->name('reports.incidents.export.pdf');
 
-Route::get('/reports/incidents/{id}', function (int $id) {
+Route::get('/reports/incidents/{incident}', function (PatientIncident $incident) {
     if (!AuditTrail::canViewReports(request()->user())) {
         abort(403);
     }
 
-    $snapshot = FormSnapshot::query()->findOrFail($id);
-    $data = $snapshot->data ?? [];
-    $patientUrlKey = str_replace('incident:', '', $snapshot->form_key);
-    $patient = Patient::query()->where('url_key', $patientUrlKey)->first();
-    $reporter = $snapshot->updated_by_user_id
-        ? User::find($snapshot->updated_by_user_id)
-        : null;
+    $incident->load(['patient', 'reportedBy', 'investigation.investigator']);
 
     return Inertia::render('ReportsIncidentView', [
-        'incident' => [
-            'id' => $snapshot->id,
-            'form_key' => $snapshot->form_key,
-            'title' => $data['incidentTitle'] ?? '-',
-            'patient_name' => $patient?->name ?? $patientUrlKey,
-            'patient_url_key' => $patientUrlKey,
-            'patient_dob' => $patient?->date_of_birth ?? '-',
-            'patient_address' => $patient?->address ?? '-',
-            'reporter' => $data['reporterName'] ?? ($reporter?->name ?? 'Unknown'),
-            'incident_date' => $data['incidentDate'] ?? '-',
-            'incident_time' => $data['incidentTime'] ?? '-',
-            'location' => $data['location'] ?? '-',
-            'antecedent' => $data['antecedent'] ?? '-',
-            'behaviour' => $data['behaviour'] ?? '-',
-            'consequence' => $data['consequence'] ?? '-',
-            'immediate_outcome' => $data['immediateOutcome'] ?? '-',
-            'lessons_learnt' => $data['lessonsLearnt'] ?? '-',
-            'new_triggers' => $data['newTriggers'] ?? '-',
-            'actions_planned' => $data['actionsPlanned'] ?? '-',
-            'tags' => $data['selectedTags'] ?? [],
-            'impacts' => $data['selectedImpacts'] ?? [],
-            'duration_minutes' => $data['incidentDuration'] ?? null,
-            'staff_members' => $data['staffMembers'] ?? [],
-            'manager_name' => $data['managerName'] ?? '-',
-            'manager_sign_off' => $data['managerSignOff'] ?? false,
-            'status' => $data['status'] ?? 'Draft',
-            'submitted_at' => $snapshot->updated_at->format('d M Y H:i'),
-        ],
+        'incident' => map_patient_incident_detail($incident),
+        'investigationStatusOptions' => IncidentInvestigation::STATUSES,
+        'riddorCategoryOptions' => collect(IncidentInvestigation::RIDDOR_CATEGORIES)
+            ->map(fn (string $cat) => [
+                'value' => $cat,
+                'label' => Str::of($cat)->replace('_', ' ')->title()->toString(),
+            ])
+            ->values(),
+        'canManageInvestigation' => AuditTrail::canViewReports(request()->user()),
     ]);
 })->middleware(['auth', 'verified'])->name('reports.incidents.show');
+
+Route::patch('/reports/incidents/{incident}/investigation', function (Request $request, PatientIncident $incident) {
+    abort_unless(AuditTrail::canViewReports($request->user()), 403);
+
+    $investigation = $incident->investigation ?? IncidentInvestigation::query()->create([
+        'patient_incident_id' => $incident->id,
+        'investigation_status' => IncidentInvestigation::STATUS_PENDING,
+        'due_at' => now()->addDays(7)->toDateString(),
+    ]);
+
+    $validated = $request->validate([
+        'investigation_status' => ['required', 'string', 'in:'.implode(',', IncidentInvestigation::STATUSES)],
+        'investigation_summary' => ['nullable', 'string', 'max:10000'],
+        'root_cause' => ['nullable', 'string', 'max:10000'],
+        'corrective_actions' => ['nullable', 'string', 'max:10000'],
+        'due_at' => ['nullable', 'date'],
+        'riddor_reportable' => ['nullable', 'boolean'],
+        'riddor_category' => ['nullable', 'string', 'in:'.implode(',', IncidentInvestigation::RIDDOR_CATEGORIES)],
+        'riddor_reported_at' => ['nullable', 'date'],
+        'riddor_reference' => ['nullable', 'string', 'max:128'],
+        'safeguarding_concern' => ['nullable', 'boolean'],
+        'safeguarding_referral_made' => ['nullable', 'boolean'],
+        'safeguarding_referral_at' => ['nullable', 'date'],
+        'safeguarding_authority' => ['nullable', 'string', 'max:255'],
+        'safeguarding_reference' => ['nullable', 'string', 'max:128'],
+    ]);
+
+    $status = $validated['investigation_status'];
+    $updates = [
+        'investigation_status' => $status,
+        'investigator_user_id' => $request->user()->id,
+        'investigation_summary' => trim((string) ($validated['investigation_summary'] ?? '')) ?: $investigation->investigation_summary,
+        'root_cause' => trim((string) ($validated['root_cause'] ?? '')) ?: $investigation->root_cause,
+        'corrective_actions' => trim((string) ($validated['corrective_actions'] ?? '')) ?: $investigation->corrective_actions,
+        'due_at' => $validated['due_at'] ?? $investigation->due_at,
+        'riddor_reportable' => $request->boolean('riddor_reportable'),
+        'riddor_category' => $validated['riddor_category'] ?? null,
+        'riddor_reference' => trim((string) ($validated['riddor_reference'] ?? '')) ?: null,
+        'safeguarding_concern' => $request->boolean('safeguarding_concern'),
+        'safeguarding_referral_made' => $request->boolean('safeguarding_referral_made'),
+        'safeguarding_authority' => trim((string) ($validated['safeguarding_authority'] ?? '')) ?: null,
+        'safeguarding_reference' => trim((string) ($validated['safeguarding_reference'] ?? '')) ?: null,
+    ];
+
+    if (!empty($validated['riddor_reported_at'])) {
+        $updates['riddor_reported_at'] = Carbon::parse((string) $validated['riddor_reported_at']);
+    }
+
+    if (!empty($validated['safeguarding_referral_at'])) {
+        $updates['safeguarding_referral_at'] = Carbon::parse((string) $validated['safeguarding_referral_at']);
+    }
+
+    if ($status === IncidentInvestigation::STATUS_IN_PROGRESS && !$investigation->investigation_started_at) {
+        $updates['investigation_started_at'] = now();
+    }
+
+    if (in_array($status, [IncidentInvestigation::STATUS_COMPLETED, IncidentInvestigation::STATUS_CLOSED], true)) {
+        $updates['investigation_completed_at'] = now();
+    }
+
+    $investigation->update($updates);
+
+    AuditTrail::record(
+        'updated',
+        'Updated investigation for incident '.$incident->reference,
+        'incident_investigation',
+        (string) $investigation->id,
+        $incident->patient?->name,
+        ['status' => $status],
+        ['patient_url_key' => $incident->patient?->url_key],
+        $request,
+    );
+
+    return redirect()->route('reports.incidents.show', $incident)->with('success', 'Investigation updated.');
+})->middleware(['auth', 'verified', 'role:super_admin,admin,care_manager,supervisor'])->name('reports.incidents.investigation.update');
 
 Route::get('/api/postcode-lookup/{postcode}', function (string $postcode) {
     $postcode = strtoupper(trim(str_replace(' ', '', $postcode)));

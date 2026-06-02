@@ -2,6 +2,7 @@ import { Head, Link, usePage } from '@inertiajs/react';
 import AppHeaderNav from '@/Components/AppHeaderNav';
 import DashboardSidebar from '@/Components/DashboardSidebar';
 import ProfileMenu from '@/Components/ProfileMenu';
+import CareAlertAction from '@/Components/CareAlertAction';
 
 const statCards = [
     {
@@ -35,37 +36,10 @@ const operations = [
     ['Bookings', '86'],
 ];
 
-const careAlerts = [
-    {
-        label: 'MISSED MEDICATION',
-        patient: 'John Powell',
-        details: 'Apixaban 2.5mg',
-        action: 'Resolve',
-        accent: 'border-red-400',
-        panel: 'bg-red-50',
-    },
-    {
-        label: 'INCOMPLETE TASK',
-        patient: 'Margaret Hughes',
-        details: 'Morning Hygiene Care',
-        action: 'Mark Complete',
-        accent: 'border-emerald-400',
-        panel: 'bg-emerald-50',
-    },
-    {
-        label: 'OBSERVATION REQUIRED',
-        patient: 'Wendy Thomas',
-        details: 'Escalated mobility review',
-        action: 'Assign',
-        accent: 'border-amber-400',
-        panel: 'bg-amber-50',
-    },
-];
-
-const analysisRows = [
-    { label: 'Medications', resolved: 78, missed: 14, flagged: 8 },
-    { label: 'Personal Care', resolved: 83, missed: 7, flagged: 10 },
-    { label: 'Observations', resolved: 67, missed: 5, flagged: 28 },
+const defaultAnalysisRows = [
+    { key: 'medications', label: 'Medications', drillDownHref: null, resolved: 0, missed: 0, flagged: 0, total: 0, resolvedCount: 0, missedCount: 0, flaggedCount: 0 },
+    { key: 'personal_care', label: 'Personal Care', drillDownHref: null, resolved: 0, missed: 0, flagged: 0, total: 0, resolvedCount: 0, missedCount: 0, flaggedCount: 0 },
+    { key: 'observations', label: 'Observations', drillDownHref: null, resolved: 0, missed: 0, flagged: 0, total: 0, resolvedCount: 0, missedCount: 0, flaggedCount: 0 },
 ];
 
 function toStrokeColor(metricColorClass) {
@@ -186,6 +160,11 @@ export default function Welcome() {
         ? dashboardStats.careAlerts.slice(0, 4)
         : [];
     const totalCareAlerts = dashboardStats?.totalCareAlerts || dashboardAlerts.length;
+    const analysisRows = Array.isArray(dashboardStats?.alertsAnalysis) && dashboardStats.alertsAnalysis.length > 0
+        ? dashboardStats.alertsAnalysis
+        : defaultAnalysisRows;
+    const alertsAnalysisPeriodLabel = dashboardStats?.alertsAnalysisPeriodLabel || 'This week';
+    const hasAnalysisData = analysisRows.some((row) => Number(row.total || 0) > 0);
 
     return (
         <>
@@ -296,22 +275,14 @@ export default function Welcome() {
                                                 <p className="mb-2 text-[11px] font-semibold tracking-wide text-slate-500">{alert.label}</p>
                                                 <p className="font-semibold text-slate-800">{alert.patient}</p>
                                                 <p className="mb-3 text-sm text-slate-600">{alert.details}</p>
-                                                {alert.href ? (
-                                                    <Link href={alert.href} className="inline-block rounded-lg bg-slate-900 px-3 py-1.5 text-xs font-semibold text-white">
-                                                        {alert.action}
-                                                    </Link>
-                                                ) : (
-                                                    <button type="button" className="rounded-lg bg-slate-900 px-3 py-1.5 text-xs font-semibold text-white">
-                                                        {alert.action}
-                                                    </button>
-                                                )}
+                                                <CareAlertAction alert={alert} />
                                             </div>
                                         ))
                                     )}
                                 </div>
                                 {totalCareAlerts > 4 && (
                                     <div className="mt-3 text-center">
-                                        <Link href="/care-alerts" className="text-sm font-semibold text-emerald-700 hover:text-emerald-800">
+                                        <Link href={route('care-alerts')} className="text-sm font-semibold text-emerald-700 hover:text-emerald-800">
                                             Open full Care Alerts →
                                         </Link>
                                     </div>
@@ -320,11 +291,9 @@ export default function Welcome() {
                         </section>
 
                         <section className="mt-4 rounded-2xl bg-white p-5">
-                            <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
+                            <div className="mb-6">
                                 <h2 className="text-3xl font-semibold text-slate-800">Alerts Analysis</h2>
-                                <button type="button" className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-medium text-white">
-                                    Start recording
-                                </button>
+                                <p className="mt-1 text-sm text-slate-500">{alertsAnalysisPeriodLabel}</p>
                             </div>
 
                             <div className="mb-4 flex flex-wrap gap-4 text-xs font-semibold uppercase tracking-wide text-slate-500">
@@ -333,18 +302,68 @@ export default function Welcome() {
                                 <span className="inline-flex items-center gap-1.5"><span className="h-2.5 w-2.5 rounded-full bg-amber-400" />Flagged</span>
                             </div>
 
-                            <div className="space-y-4">
-                                {analysisRows.map((row) => (
-                                    <div key={row.label}>
-                                        <p className="mb-2 text-sm font-medium text-slate-600">{row.label}</p>
-                                        <div className="flex h-7 overflow-hidden rounded-full bg-slate-100">
-                                            <div className="h-full bg-red-500" style={{ width: `${row.missed}%` }} />
-                                            <div className="h-full bg-emerald-500" style={{ width: `${row.resolved}%` }} />
-                                            <div className="h-full bg-amber-400" style={{ width: `${row.flagged}%` }} />
-                                        </div>
-                                    </div>
-                                ))}
-                            </div>
+                            {!hasAnalysisData ? (
+                                <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-8 text-center text-sm text-slate-500">
+                                    No medication, visit task, or observation activity recorded this week yet.
+                                </div>
+                            ) : (
+                                <div className="space-y-4">
+                                    {analysisRows.map((row) => {
+                                        const rowContent = (
+                                            <>
+                                                <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                                                    <p className="text-sm font-medium text-slate-600">
+                                                        {row.label}
+                                                        {row.drillDownHref && Number(row.total) > 0 && (
+                                                            <span className="ml-2 text-xs font-normal text-emerald-700">View details →</span>
+                                                        )}
+                                                    </p>
+                                                    <p className="text-xs text-slate-400">
+                                                        {row.total} event{row.total === 1 ? '' : 's'}
+                                                        {' · '}
+                                                        <span className="text-emerald-700">{row.resolvedCount} resolved</span>
+                                                        {row.missedCount > 0 && (
+                                                            <span className="text-red-600"> · {row.missedCount} missed</span>
+                                                        )}
+                                                        {row.flaggedCount > 0 && (
+                                                            <span className="text-amber-700"> · {row.flaggedCount} flagged</span>
+                                                        )}
+                                                    </p>
+                                                </div>
+                                                <div className="flex h-7 overflow-hidden rounded-full bg-slate-100">
+                                                    {row.missed > 0 && (
+                                                        <div className="h-full bg-red-500" style={{ width: `${row.missed}%` }} title={`Missed ${row.missed}%`} />
+                                                    )}
+                                                    {row.resolved > 0 && (
+                                                        <div className="h-full bg-emerald-500" style={{ width: `${row.resolved}%` }} title={`Resolved ${row.resolved}%`} />
+                                                    )}
+                                                    {row.flagged > 0 && (
+                                                        <div className="h-full bg-amber-400" style={{ width: `${row.flagged}%` }} title={`Flagged ${row.flagged}%`} />
+                                                    )}
+                                                </div>
+                                            </>
+                                        );
+
+                                        if (row.drillDownHref && Number(row.total) > 0) {
+                                            return (
+                                                <Link
+                                                    key={row.key || row.label}
+                                                    href={row.drillDownHref}
+                                                    className="block rounded-xl border border-transparent p-2 transition hover:border-slate-200 hover:bg-slate-50"
+                                                >
+                                                    {rowContent}
+                                                </Link>
+                                            );
+                                        }
+
+                                        return (
+                                            <div key={row.key || row.label}>
+                                                {rowContent}
+                                            </div>
+                                        );
+                                    })}
+                                </div>
+                            )}
                         </section>
                     </main>
                 </div>

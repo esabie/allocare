@@ -1,4 +1,5 @@
 import { Head, Link, router, usePage } from '@inertiajs/react';
+import ConfirmDialog from '@/Components/ConfirmDialog';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import ApplicationLogo from '@/Components/ApplicationLogo';
 import ProfileMenu from '@/Components/ProfileMenu';
@@ -19,6 +20,27 @@ const sideTabs = [
 
 const quickTags = ['Loud Noise', 'Medication Delay', 'Personal Care', 'Hunger/Thirst', 'Shift Change'];
 
+function incidentInvolvesPersonalData(data) {
+    const impacts = data?.selectedImpacts || [];
+    if (impacts.includes('Personal / confidential data')) {
+        return true;
+    }
+
+    const blob = [
+        data?.incidentTitle,
+        data?.behaviour,
+        data?.consequence,
+        data?.immediateOutcome,
+        data?.lessonsLearnt,
+        data?.actionsPlanned,
+    ]
+        .filter(Boolean)
+        .join(' ')
+        .toLowerCase();
+
+    return /\b(personal data|data breach|confidential|gdpr|privacy|nhs number|medical record|health data)\b/.test(blob);
+}
+
 function getStatusMeta(incidentStatus) {
     const normalized = String(incidentStatus || '').trim().toLowerCase();
     if (['submitted', 'reviewed', 'under_review'].includes(normalized)) {
@@ -34,9 +56,15 @@ function getStatusMeta(incidentStatus) {
     };
 }
 
-export default function IncidentReport({ patientSlug = 'cr-88210', incidentStatus = 'new', initialSnapshot = null, patientData = {}, reporterName = '' }) {
+export default function IncidentReport({
+    patientSlug = 'cr-88210',
+    incidentStatus = 'new',
+    initialSnapshot = null,
+    patientData = {},
+    reporterName = '',
+}) {
     const formRef = useRef(null);
-    const { auth } = usePage().props;
+    const { auth, flash } = usePage().props;
     const [selectedTags, setSelectedTags] = useState([]);
     const [incidentDuration, setIncidentDuration] = useState(5);
     const [selectedImpacts, setSelectedImpacts] = useState([]);
@@ -45,6 +73,8 @@ export default function IncidentReport({ patientSlug = 'cr-88210', incidentStatu
     const [managerName, setManagerName] = useState('');
     const [managerSignOff, setManagerSignOff] = useState(false);
     const [isOnline, setIsOnline] = useState(typeof navigator !== 'undefined' ? navigator.onLine : true);
+    const [gdprPromptOpen, setGdprPromptOpen] = useState(false);
+    const [lastSubmittedRef, setLastSubmittedRef] = useState('');
     const incidentRef = useMemo(() => {
         const now = new Date();
         const year = now.getFullYear();
@@ -151,6 +181,7 @@ export default function IncidentReport({ patientSlug = 'cr-88210', incidentStatu
         if (!Object.keys(data).length) return;
         data.status = 'Submitted';
         data.submittedAt = new Date().toISOString();
+        const involvesPersonalData = incidentInvolvesPersonalData(data);
         setSubmitting(true);
         postWithOfflineQueue(
             route('form-snapshots.save', { formKey: `incident:${patientSlug}` }),
@@ -160,18 +191,46 @@ export default function IncidentReport({ patientSlug = 'cr-88210', incidentStatu
                     setSubmitting(false);
                     setSubmitted(true);
                     resetForm();
+                    router.reload({
+                        preserveScroll: true,
+                        onSuccess: (page) => {
+                            const pageFlash = page?.props?.flash || {};
+                            const ref = pageFlash?.gdprBreachPrefill?.incident_reference
+                                || String(pageFlash?.success || '').match(/INC-\d{4}-\d+/)?.[0]
+                                || '';
+                            if (ref) {
+                                setLastSubmittedRef(ref);
+                            }
+                            if (pageFlash?.suggest_gdpr_breach || involvesPersonalData) {
+                                setGdprPromptOpen(true);
+                            }
+                        },
+                    });
                 },
                 onQueued: () => {
                     setSubmitting(false);
                     setSubmitted(true);
+                    if (involvesPersonalData) {
+                        setGdprPromptOpen(true);
+                    }
                     resetForm();
                 },
                 onError: () => {
                     setSubmitting(false);
                 },
-            }
+            },
         );
     };
+
+    useEffect(() => {
+        if (flash?.suggest_gdpr_breach) {
+            setGdprPromptOpen(true);
+            const ref = flash?.gdprBreachPrefill?.incident_reference || flash?.success?.match(/INC-\d{4}-\d+/)?.[0];
+            if (ref) {
+                setLastSubmittedRef(ref);
+            }
+        }
+    }, [flash?.suggest_gdpr_breach, flash?.gdprBreachPrefill, flash?.success]);
 
     useEffect(() => {
         const onOnline = () => setIsOnline(true);
@@ -447,6 +506,17 @@ export default function IncidentReport({ patientSlug = 'cr-88210', incidentStatu
                                         >
                                             Property Damage
                                         </button>
+                                        <button
+                                            type="button"
+                                            onClick={() => toggleImpact('Personal / confidential data')}
+                                            className={`rounded-lg border px-3 py-2 text-xs font-medium transition ${
+                                                selectedImpacts.includes('Personal / confidential data')
+                                                    ? 'border-rose-200 bg-rose-50 text-rose-800'
+                                                    : 'border-slate-200 bg-slate-50 text-slate-600 hover:bg-slate-100'
+                                            }`}
+                                        >
+                                            Personal / confidential data
+                                        </button>
                                     </div>
                                 </div>
                             </div>
@@ -554,7 +624,9 @@ export default function IncidentReport({ patientSlug = 'cr-88210', incidentStatu
                                     {submitted ? (
                                         <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-5 py-4 text-center">
                                             <p className="text-sm font-semibold text-emerald-700">Incident Report Submitted Successfully</p>
-                                            <p className="mt-1 text-xs text-emerald-600">Reference: {incidentRef}</p>
+                                            <p className="mt-1 text-xs text-emerald-600">
+                                                Reference: {lastSubmittedRef || flash?.gdprBreachPrefill?.incident_reference || incidentRef}
+                                            </p>
                                             <Link
                                                 href={route('patients.show', patientSlug)}
                                                 className="mt-3 inline-block rounded-lg bg-emerald-700 px-4 py-2 text-xs font-semibold text-white hover:bg-emerald-800"
@@ -605,6 +677,24 @@ export default function IncidentReport({ patientSlug = 'cr-88210', incidentStatu
                     </main>
                 </div>
             </div>
+
+            <ConfirmDialog
+                show={gdprPromptOpen}
+                title="Log a GDPR data breach?"
+                message={
+                    lastSubmittedRef
+                        ? `Incident ${lastSubmittedRef} may involve personal or confidential data. If required, log a personal data breach on the GDPR register within 72 hours for ICO review.`
+                        : 'This incident may involve personal or confidential data. If required, log a personal data breach on the GDPR register within 72 hours for ICO review.'
+                }
+                confirmLabel="Open GDPR register"
+                cancelLabel="Not now"
+                confirmVariant="primary"
+                onClose={() => setGdprPromptOpen(false)}
+                onConfirm={() => {
+                    setGdprPromptOpen(false);
+                    router.visit(route('reports.gdpr'));
+                }}
+            />
         </>
     );
 }

@@ -22,7 +22,14 @@ function severityBadge(severity) {
 }
 
 export default function ReportsIncidents({ incidents = [], stats = {} }) {
-    const { total = 0, submitted = 0, drafts = 0, byPatient = {} } = stats;
+    const {
+        total = 0,
+        submitted = 0,
+        openInvestigations = 0,
+        riddorOpen = 0,
+        safeguardingOpen = 0,
+        byPatient = {},
+    } = stats;
     const [showByPatient, setShowByPatient] = useState(false);
     const [selectedPatient, setSelectedPatient] = useState('');
 
@@ -63,12 +70,24 @@ export default function ReportsIncidents({ incidents = [], stats = {} }) {
                                     ← Back to Reports
                                 </Link>
                             </div>
-                            <div className="mt-3 flex gap-2">
+                            <div className="mt-3 flex flex-wrap gap-2">
                                 <a
                                     href={route('reports.incidents.export.csv')}
                                     className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50"
                                 >
                                     Export CSV
+                                </a>
+                                <a
+                                    href={route('reports.incidents.export.riddor')}
+                                    className="rounded-lg border border-rose-200 bg-rose-50 px-4 py-2 text-xs font-semibold text-rose-800 hover:bg-rose-100"
+                                >
+                                    RIDDOR register
+                                </a>
+                                <a
+                                    href={route('reports.incidents.export.safeguarding')}
+                                    className="rounded-lg border border-indigo-200 bg-indigo-50 px-4 py-2 text-xs font-semibold text-indigo-800 hover:bg-indigo-100"
+                                >
+                                    Safeguarding referrals
                                 </a>
                                 <a
                                     href={route('reports.incidents.export.pdf')}
@@ -79,11 +98,12 @@ export default function ReportsIncidents({ incidents = [], stats = {} }) {
                             </div>
                         </section>
 
-                        {/* Stats */}
-                        <section className="mb-6 grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
+                        <section className="mb-6 grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-5">
                             <StatCard label="Total Incidents" value={total} />
                             <StatCard label="Submitted" value={submitted} accent="text-emerald-700" />
-                            <StatCard label="Drafts" value={drafts} accent="text-amber-700" />
+                            <StatCard label="Open investigations" value={openInvestigations} accent="text-amber-700" />
+                            <StatCard label="RIDDOR open" value={riddorOpen} accent="text-rose-700" />
+                            <StatCard label="Safeguarding open" value={safeguardingOpen} accent="text-indigo-700" />
                         </section>
 
                         {/* By Patient */}
@@ -138,12 +158,12 @@ export default function ReportsIncidents({ incidents = [], stats = {} }) {
                                 <table className="w-full min-w-[900px] border-collapse text-left text-sm">
                                     <thead className="bg-slate-50">
                                         <tr>
+                                            <th className="border border-slate-200 px-3 py-2">Ref</th>
                                             <th className="border border-slate-200 px-3 py-2">Title</th>
-                                            <th className="border border-slate-200 px-3 py-2">Incident Date</th>
-                                            <th className="border border-slate-200 px-3 py-2">Time of Incident</th>
+                                            <th className="border border-slate-200 px-3 py-2">Date</th>
                                             <th className="border border-slate-200 px-3 py-2">Patient</th>
-                                            <th className="border border-slate-200 px-3 py-2">Reporter</th>
-                                            <th className="border border-slate-200 px-3 py-2">Status</th>
+                                            <th className="border border-slate-200 px-3 py-2">Investigation</th>
+                                            <th className="border border-slate-200 px-3 py-2">Flags</th>
                                             <th className="border border-slate-200 px-3 py-2">Submitted</th>
                                             <th className="border border-slate-200 px-3 py-2"></th>
                                         </tr>
@@ -156,31 +176,43 @@ export default function ReportsIncidents({ incidents = [], stats = {} }) {
                                                 </td>
                                             </tr>
                                         ) : (
-                                            incidents.map((incident) => (
+                                            incidents.map((incident) => {
+                                                const inv = incident.investigation || {};
+                                                return (
                                                 <tr key={incident.id} className="odd:bg-white even:bg-slate-50/30">
-                                                    <td className="border border-slate-200 px-3 py-2 font-medium max-w-[200px] truncate">{incident.title}</td>
-                                                    <td className="whitespace-nowrap border border-slate-200 px-3 py-2">{incident.incident_date}</td>
-                                                    <td className="whitespace-nowrap border border-slate-200 px-3 py-2">{incident.incident_time}</td>
+                                                    <td className="border border-slate-200 px-3 py-2 text-xs font-mono">{incident.reference}</td>
+                                                    <td className="border border-slate-200 px-3 py-2 font-medium max-w-[180px] truncate">{incident.title}</td>
+                                                    <td className="whitespace-nowrap border border-slate-200 px-3 py-2 text-xs">{incident.incident_date}</td>
                                                     <td className="border border-slate-200 px-3 py-2">{incident.patient_name}</td>
-                                                    <td className="border border-slate-200 px-3 py-2">{incident.reporter}</td>
                                                     <td className="border border-slate-200 px-3 py-2">
-                                                        <span className={`inline-block rounded-full px-2.5 py-1 text-[10px] font-semibold ${
-                                                            incident.status === 'Submitted' ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'
+                                                        <span className={`inline-block rounded-full px-2 py-0.5 text-[10px] font-semibold ${
+                                                            inv.investigationOverdue ? 'bg-rose-100 text-rose-800' : 'bg-slate-100 text-slate-700'
                                                         }`}>
-                                                            {incident.status}
+                                                            {inv.statusLabel || 'Pending'}
                                                         </span>
                                                     </td>
-                                                    <td className="whitespace-nowrap border border-slate-200 px-3 py-2">{incident.submitted_at}</td>
+                                                    <td className="border border-slate-200 px-3 py-2">
+                                                        <div className="flex flex-wrap gap-1">
+                                                            {inv.riddorReportable && (
+                                                                <span className={`rounded px-1.5 py-0.5 text-[9px] font-bold ${inv.riddorOverdue ? 'bg-red-100 text-red-800' : 'bg-rose-50 text-rose-700'}`}>RIDDOR</span>
+                                                            )}
+                                                            {inv.safeguardingConcern && (
+                                                                <span className={`rounded px-1.5 py-0.5 text-[9px] font-bold ${inv.safeguardingPending ? 'bg-indigo-100 text-indigo-800' : 'bg-indigo-50 text-indigo-700'}`}>SG</span>
+                                                            )}
+                                                        </div>
+                                                    </td>
+                                                    <td className="whitespace-nowrap border border-slate-200 px-3 py-2 text-xs">{incident.submitted_at}</td>
                                                     <td className="border border-slate-200 px-3 py-2">
                                                         <Link
                                                             href={route('reports.incidents.show', incident.id)}
                                                             className="rounded-lg bg-slate-900 px-3 py-1.5 text-[11px] font-semibold text-white hover:bg-slate-700"
                                                         >
-                                                            View
+                                                            Investigate
                                                         </Link>
                                                     </td>
                                                 </tr>
-                                            ))
+                                                );
+                                            })
                                         )}
                                     </tbody>
                                 </table>

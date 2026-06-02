@@ -1,5 +1,6 @@
-import { Head, Link, router, useForm, usePage } from '@inertiajs/react';
+import { Head, Link, useForm, usePage } from '@inertiajs/react';
 import { useMemo, useState } from 'react';
+import { routerPatchWithOffline, routerPostWithOffline } from '@/utils/offlineQueue';
 import DashboardSidebar from '@/Components/DashboardSidebar';
 import AppHeaderNav from '@/Components/AppHeaderNav';
 import ProfileMenu from '@/Components/ProfileMenu';
@@ -109,6 +110,8 @@ function getStatusMeta(entry) {
 
 export default function Schedules({ patients = [], staff = [], entries = [] }) {
     const flashSuccess = usePage().props?.flash?.success;
+    const [queueMessage, setQueueMessage] = useState('');
+    const [savingBooking, setSavingBooking] = useState(false);
     const [showNewBooking, setShowNewBooking] = useState(false);
     const [showFilters, setShowFilters] = useState(false);
     const [bookedOnly, setBookedOnly] = useState(false);
@@ -136,20 +139,36 @@ export default function Schedules({ patients = [], staff = [], entries = [] }) {
         setCompletionNotes('');
     };
 
-    const markCompleted = () => {
+    const markCompleted = async () => {
         if (!selectedEntry) return;
-        router.patch(route('schedules.complete', selectedEntry.id), { notes: completionNotes || 'Shift completed', status: 'completed' }, {
-            preserveScroll: true,
-            onSuccess: () => closeCompletionModal(),
-        });
+        setQueueMessage('');
+        await routerPatchWithOffline(
+            route('schedules.complete', selectedEntry.id),
+            { notes: completionNotes || 'Shift completed', status: 'completed' },
+            {
+                onSuccess: () => closeCompletionModal(),
+                onQueued: () => {
+                    closeCompletionModal();
+                    setQueueMessage('Saved offline — visit status will sync when connection returns.');
+                },
+            },
+        );
     };
 
-    const markMissed = () => {
+    const markMissed = async () => {
         if (!selectedEntry) return;
-        router.patch(route('schedules.complete', selectedEntry.id), { notes: completionNotes || 'Shift missed — carer did not attend', status: 'missed' }, {
-            preserveScroll: true,
-            onSuccess: () => closeCompletionModal(),
-        });
+        setQueueMessage('');
+        await routerPatchWithOffline(
+            route('schedules.complete', selectedEntry.id),
+            { notes: completionNotes || 'Shift missed — carer did not attend', status: 'missed' },
+            {
+                onSuccess: () => closeCompletionModal(),
+                onQueued: () => {
+                    closeCompletionModal();
+                    setQueueMessage('Saved offline — missed visit will sync when connection returns.');
+                },
+            },
+        );
     };
 
     const openRescheduleModal = (entry) => {
@@ -168,19 +187,27 @@ export default function Schedules({ patients = [], staff = [], entries = [] }) {
         setRescheduleEndTime('');
     };
 
-    const submitReschedule = () => {
+    const submitReschedule = async () => {
         if (!rescheduleEntry) return;
-        router.patch(route('schedules.reschedule', rescheduleEntry.id), {
-            patient_url_key: rescheduleEntry.patientUrlKey,
-            visit_date: rescheduleDate,
-            start_time: rescheduleStartTime,
-            end_time: rescheduleEndTime,
-        }, {
-            preserveScroll: true,
-            onSuccess: () => closeRescheduleModal(),
-        });
+        setQueueMessage('');
+        await routerPatchWithOffline(
+            route('schedules.reschedule', rescheduleEntry.id),
+            {
+                patient_url_key: rescheduleEntry.patientUrlKey,
+                visit_date: rescheduleDate,
+                start_time: rescheduleStartTime,
+                end_time: rescheduleEndTime,
+            },
+            {
+                onSuccess: () => closeRescheduleModal(),
+                onQueued: () => {
+                    closeRescheduleModal();
+                    setQueueMessage('Saved offline — reschedule will sync when connection returns.');
+                },
+            },
+        );
     };
-    const { data, setData, post, processing, errors, reset } = useForm({
+    const { data, setData, errors, reset } = useForm({
         patient_url_key: '',
         assigned_user_id: '',
         visit_date: '',
@@ -190,18 +217,25 @@ export default function Schedules({ patients = [], staff = [], entries = [] }) {
         notes: '',
     });
 
-    const submit = (event) => {
+    const submit = async (event) => {
         event.preventDefault();
-        post(route('schedules.store'), {
-            preserveScroll: true,
+        setQueueMessage('');
+        setSavingBooking(true);
+        await routerPostWithOffline(route('schedules.store'), data, {
             onSuccess: () => {
                 reset('patient_url_key', 'assigned_user_id', 'visit_date', 'start_time', 'end_time', 'purpose', 'notes');
                 setShowNewBooking(false);
             },
+            onQueued: () => {
+                reset('patient_url_key', 'assigned_user_id', 'visit_date', 'start_time', 'end_time', 'purpose', 'notes');
+                setShowNewBooking(false);
+                setQueueMessage('Saved offline — new visit will sync when connection returns.');
+            },
         });
+        setSavingBooking(false);
     };
 
-    const rescheduleEntryToCell = (targetPatientUrlKey, targetDateIso) => {
+    const rescheduleEntryToCell = async (targetPatientUrlKey, targetDateIso) => {
         if (!draggedEntry) return;
 
         const previousStart = new Date(draggedEntry.startAt);
@@ -217,15 +251,20 @@ export default function Schedules({ patients = [], staff = [], entries = [] }) {
         nextStart.setHours(previousStart.getHours(), previousStart.getMinutes(), 0, 0);
         const nextEnd = new Date(nextStart.getTime() + durationMs);
 
-        router.patch(route('schedules.reschedule', draggedEntry.id), {
-            patient_url_key: targetPatientUrlKey,
-            visit_date: targetDateIso,
-            start_time: formatTimeHm(nextStart),
-            end_time: formatTimeHm(nextEnd),
-        }, {
-            preserveScroll: true,
-            onFinish: () => setDraggedEntry(null),
-        });
+        setQueueMessage('');
+        await routerPatchWithOffline(
+            route('schedules.reschedule', draggedEntry.id),
+            {
+                patient_url_key: targetPatientUrlKey,
+                visit_date: targetDateIso,
+                start_time: formatTimeHm(nextStart),
+                end_time: formatTimeHm(nextEnd),
+            },
+            {
+                onQueued: () => setQueueMessage('Saved offline — reschedule will sync when connection returns.'),
+            },
+        );
+        setDraggedEntry(null);
     };
 
     const weekDates = useMemo(() => {
@@ -329,9 +368,9 @@ export default function Schedules({ patients = [], staff = [], entries = [] }) {
                             <span className="text-slate-900">Schedules</span>
                         </div>
 
-                        {flashSuccess && (
+                        {(flashSuccess || queueMessage) && (
                             <div className="mb-4 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
-                                {flashSuccess}
+                                {queueMessage || flashSuccess}
                             </div>
                         )}
 
@@ -671,10 +710,10 @@ export default function Schedules({ patients = [], staff = [], entries = [] }) {
 
                             <button
                                 type="submit"
-                                disabled={processing}
+                                disabled={savingBooking}
                                 className="w-full rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white disabled:opacity-60"
                             >
-                                {processing ? 'Saving...' : 'Save Schedule'}
+                                {savingBooking ? 'Saving...' : 'Save Schedule'}
                             </button>
                         </form>
                     </div>

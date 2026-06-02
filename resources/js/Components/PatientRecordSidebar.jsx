@@ -8,6 +8,8 @@ const tabs = [
     { key: 'risk_assessment', label: 'Risk Assessment', route: 'patients.risks' },
     { key: 'medication', label: 'eMAR', route: 'patients.mar' },
     { key: 'observations', label: 'Observations', route: 'patients.observations' },
+    { key: 'handovers', label: 'Handovers', route: 'patients.handovers' },
+    { key: 'wound_care', label: 'Wound care', route: 'patients.wound-care' },
     { key: 'documents', label: 'Documents', route: 'patients.documents' },
     { key: 'notes', label: 'Notes' },
     { key: 'logs', label: 'Logs', route: 'patients.logs' },

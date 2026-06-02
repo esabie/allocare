@@ -52,3 +52,20 @@ if ('serviceWorker' in navigator) {
 window.addEventListener('online', () => {
     flushOfflineQueue().catch(() => {});
 });
+
+window.addEventListener('allocare:offline-synced', (event) => {
+    const flushed = event.detail?.flushed ?? 0;
+    if (flushed < 1) {
+        return;
+    }
+
+    const remaining = event.detail?.remaining ?? 0;
+    const banner = document.createElement('div');
+    banner.textContent = remaining > 0
+        ? `Synced ${flushed} offline action(s). ${remaining} still waiting.`
+        : `Synced ${flushed} offline action(s).`;
+    banner.setAttribute('role', 'status');
+    banner.className = 'fixed bottom-4 right-4 z-[9999] max-w-sm rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-medium text-emerald-900 shadow-lg';
+    document.body.appendChild(banner);
+    window.setTimeout(() => banner.remove(), 5000);
+});
