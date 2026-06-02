@@ -1,4 +1,11 @@
 import { Head, Link, router, usePage } from '@inertiajs/react';
+
+const VISIT_TASK_OUTCOMES = [
+    { key: 'completed', label: 'Done', active: 'border-emerald-600 bg-emerald-600 text-white' },
+    { key: 'refused', label: 'Refused', active: 'border-rose-600 bg-rose-600 text-white' },
+    { key: 'unable', label: 'Unable', active: 'border-amber-600 bg-amber-600 text-white' },
+    { key: 'escalated', label: 'Escalated', active: 'border-indigo-700 bg-indigo-700 text-white' },
+];
 import { useCallback, useEffect, useState } from 'react';
 import ApplicationLogo from '@/Components/ApplicationLogo';
 import AppHeaderNav from '@/Components/AppHeaderNav';
@@ -111,7 +118,14 @@ function ToggleChoice({ value, onChange }) {
     );
 }
 
-export default function ShiftCheckIn({ patientSlug = 'arthur-henderson', initialSnapshot = null, latestVitals = null, patientContext = null, medicationItems = [] }) {
+export default function ShiftCheckIn({
+    patientSlug = 'arthur-henderson',
+    initialSnapshot = null,
+    latestVitals = null,
+    patientContext = null,
+    medicationItems = [],
+    visitTasks: initialVisitTasks = [],
+}) {
     const { auth } = usePage().props;
     const patientName = patientContext?.name || 'Patient';
     const patientLocation = patientContext?.location || 'Location not provided';
@@ -121,6 +135,7 @@ export default function ShiftCheckIn({ patientSlug = 'arthur-henderson', initial
     const scheduledStartAt = patientContext?.scheduledStartAt ? new Date(patientContext.scheduledStartAt) : null;
     const scheduledEndAt = patientContext?.scheduledEndAt ? new Date(patientContext.scheduledEndAt) : null;
     const scheduledWindow = patientContext?.scheduledWindow || 'Not scheduled';
+    const activeScheduleId = patientContext?.activeScheduleId || null;
     const hasScheduledDate = scheduledStartAt && !Number.isNaN(scheduledStartAt.getTime());
     const scheduledDateLabel = hasScheduledDate ? scheduledStartAt.toLocaleDateString([], { year: 'numeric', month: 'short', day: 'numeric' }) : '';
     const scheduledDisplay = hasScheduledDate ? `${scheduledDateLabel} • ${scheduledWindow}` : scheduledWindow;
@@ -154,6 +169,17 @@ export default function ShiftCheckIn({ patientSlug = 'arthur-henderson', initial
     const [gpsDistance, setGpsDistance] = useState(null);
     const [gpsError, setGpsError] = useState(null);
     const [isOnline, setIsOnline] = useState(typeof navigator !== 'undefined' ? navigator.onLine : true);
+    const [visitTasks, setVisitTasks] = useState(initialVisitTasks);
+    const [taskDrafts, setTaskDrafts] = useState(() =>
+        Object.fromEntries(
+            initialVisitTasks.map((task) => [
+                task.id,
+                { outcome: task.outcome || '', notes: task.notes || '' },
+            ])
+        )
+    );
+    const [visitTasksSaving, setVisitTasksSaving] = useState(false);
+    const [visitTasksMessage, setVisitTasksMessage] = useState('');
 
     const verifyGps = useCallback(() => {
         if (!navigator.geolocation) {
@@ -253,6 +279,90 @@ export default function ShiftCheckIn({ patientSlug = 'arthur-henderson', initial
                 onSuccess: () => persistSnapshot({ vitals }),
                 onQueued: () => persistSnapshot({ vitals }),
             }
+        );
+    };
+
+    const submitEcmSessionStart = (startedAt) => {
+        postWithOfflineQueue(
+            route('patients.shift-checkin.session.start', patientSlug),
+            {
+                schedule_id: activeScheduleId,
+                started_at: startedAt.toISOString(),
+                gps_latitude: gpsCoords?.latitude ?? null,
+                gps_longitude: gpsCoords?.longitude ?? null,
+            },
+            {
+                onSuccess: () => router.reload({ only: ['visitTasks'] }),
+            }
+        );
+    };
+
+    const saveVisitTasks = async () => {
+        if (!activeScheduleId || visitTasks.length === 0) {
+            return;
+        }
+
+        const tasks = visitTasks
+            .map((task) => ({
+                id: task.id,
+                outcome: taskDrafts[task.id]?.outcome,
+                notes: taskDrafts[task.id]?.notes || '',
+            }))
+            .filter((task) => VISIT_TASK_OUTCOMES.some((option) => option.key === task.outcome));
+
+        if (tasks.length === 0) {
+            setVisitTasksMessage('Select an outcome for at least one task.');
+            return;
+        }
+
+        setVisitTasksSaving(true);
+        setVisitTasksMessage('');
+
+        const result = await postWithOfflineQueue(
+            route('schedules.visit-tasks.store', activeScheduleId),
+            { tasks },
+            {
+                onQueued: () => setVisitTasksMessage('Saved offline — will sync when connection returns.'),
+            }
+        );
+
+        setVisitTasksSaving(false);
+
+        if (result?.queued) {
+            return;
+        }
+
+        if (result?.ok) {
+            setVisitTasksMessage('Visit tasks saved.');
+            router.reload({ only: ['visitTasks'] });
+        } else {
+            setVisitTasksMessage('Could not save tasks. They will retry when you are back online.');
+        }
+    };
+
+    useEffect(() => {
+        setVisitTasks(initialVisitTasks);
+        setTaskDrafts(
+            Object.fromEntries(
+                initialVisitTasks.map((task) => [
+                    task.id,
+                    { outcome: task.outcome || '', notes: task.notes || '' },
+                ])
+            )
+        );
+    }, [initialVisitTasks]);
+
+    const submitEcmSessionEnd = (endedAt, reason) => {
+        postWithOfflineQueue(
+            route('patients.shift-checkin.session.end', patientSlug),
+            {
+                schedule_id: activeScheduleId,
+                ended_at: endedAt.toISOString(),
+                gps_latitude: gpsCoords?.latitude ?? null,
+                gps_longitude: gpsCoords?.longitude ?? null,
+                reason: reason || null,
+            },
+            {}
         );
     };
 
@@ -434,8 +544,18 @@ export default function ShiftCheckIn({ patientSlug = 'arthur-henderson', initial
                                 <p className="text-sm text-slate-600">
                                     {hasShiftEndedManually
                                         ? `Shift was ended early. Reason: ${sessionEndReason}`
-                                        : 'This shift has ended. Please proceed to notes and documentation.'}
+                                        : 'This shift has ended. Please complete your structured handover for incoming staff.'}
                                 </p>
+                                <Link
+                                    href={
+                                        activeScheduleId
+                                            ? `${route('patients.handovers', patientSlug)}?schedule_id=${activeScheduleId}`
+                                            : route('patients.handovers', patientSlug)
+                                    }
+                                    className="mt-3 inline-flex rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white transition hover:bg-slate-800"
+                                >
+                                    Complete handover
+                                </Link>
                             </section>
                         )}
 
@@ -651,6 +771,7 @@ export default function ShiftCheckIn({ patientSlug = 'arthur-henderson', initial
                                                     sessionEndedAt: null,
                                                     sessionEndReason: '',
                                                 });
+                                                submitEcmSessionStart(startedAt);
                                             }
                                         }}
                                         className={`mt-4 w-full rounded-xl px-4 py-3 text-sm font-semibold text-white transition active:scale-[0.98] ${
@@ -711,6 +832,7 @@ export default function ShiftCheckIn({ patientSlug = 'arthur-henderson', initial
                                                                         sessionEndedAt: endedAt.toISOString(),
                                                                         sessionEndReason: manualEndReasonInput.trim(),
                                                                     });
+                                                                    submitEcmSessionEnd(endedAt, manualEndReasonInput.trim());
                                                                 }
                                                             }}
                                                             className={`rounded-lg px-3 py-2 text-xs font-semibold text-white transition ${
@@ -739,6 +861,90 @@ export default function ShiftCheckIn({ patientSlug = 'arthur-henderson', initial
                                 </article>
                             </aside>
                         </div>
+
+                        {visitTasks.length > 0 && (
+                            <section className="mt-6 rounded-2xl border border-slate-200 bg-white p-4 sm:p-5">
+                                <div className="mb-4 flex flex-wrap items-end justify-between gap-2">
+                                    <div>
+                                        <h2 className="text-lg font-semibold text-slate-900">Visit tasks</h2>
+                                        <p className="text-sm text-slate-500">
+                                            Record outcome for each planned activity: completed, refused, unable, or escalated.
+                                        </p>
+                                    </div>
+                                    {!hasShiftStarted && (
+                                        <p className="text-xs font-medium text-amber-700">Start session to record tasks.</p>
+                                    )}
+                                </div>
+                                <ul className="space-y-4">
+                                    {visitTasks.map((task) => {
+                                        const draft = taskDrafts[task.id] || { outcome: '', notes: '' };
+                                        return (
+                                            <li key={task.id} className="rounded-xl border border-slate-200 p-4">
+                                                <div className="flex flex-wrap items-start justify-between gap-2">
+                                                    <p className="font-semibold text-slate-900">{task.taskLabel}</p>
+                                                    {task.outcome && (
+                                                        <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-slate-600">
+                                                            Saved: {task.outcome}
+                                                        </span>
+                                                    )}
+                                                </div>
+                                                <div className="mt-3 flex flex-wrap gap-2">
+                                                    {VISIT_TASK_OUTCOMES.map((option) => (
+                                                        <button
+                                                            key={option.key}
+                                                            type="button"
+                                                            disabled={!hasShiftStarted || visitTasksSaving}
+                                                            onClick={() =>
+                                                                setTaskDrafts((prev) => ({
+                                                                    ...prev,
+                                                                    [task.id]: { ...draft, outcome: option.key },
+                                                                }))
+                                                            }
+                                                            className={`rounded-lg border px-3 py-1.5 text-xs font-semibold transition ${
+                                                                draft.outcome === option.key
+                                                                    ? option.active
+                                                                    : 'border-slate-200 bg-white text-slate-600 hover:border-slate-300'
+                                                            } ${!hasShiftStarted ? 'cursor-not-allowed opacity-50' : ''}`}
+                                                        >
+                                                            {option.label}
+                                                        </button>
+                                                    ))}
+                                                </div>
+                                                <textarea
+                                                    value={draft.notes}
+                                                    disabled={!hasShiftStarted || visitTasksSaving}
+                                                    onChange={(event) =>
+                                                        setTaskDrafts((prev) => ({
+                                                            ...prev,
+                                                            [task.id]: { ...draft, notes: event.target.value },
+                                                        }))
+                                                    }
+                                                    placeholder="Optional notes (required for refused / escalated)"
+                                                    className="mt-3 min-h-[64px] w-full rounded-md border border-slate-200 bg-slate-50 px-2 py-2 text-sm disabled:opacity-50"
+                                                />
+                                            </li>
+                                        );
+                                    })}
+                                </ul>
+                                <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
+                                    {visitTasksMessage && (
+                                        <p className="text-sm font-medium text-slate-600">{visitTasksMessage}</p>
+                                    )}
+                                    <button
+                                        type="button"
+                                        disabled={!hasShiftStarted || visitTasksSaving}
+                                        onClick={saveVisitTasks}
+                                        className={`ml-auto rounded-lg px-4 py-2 text-sm font-semibold text-white transition ${
+                                            hasShiftStarted && !visitTasksSaving
+                                                ? 'bg-slate-900 hover:bg-slate-800'
+                                                : 'cursor-not-allowed bg-slate-400'
+                                        }`}
+                                    >
+                                        {visitTasksSaving ? 'Saving…' : 'Save visit tasks'}
+                                    </button>
+                                </div>
+                            </section>
+                        )}
 
                         <section className="mt-6 rounded-2xl border border-slate-200 bg-white px-4 py-3">
                             <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">

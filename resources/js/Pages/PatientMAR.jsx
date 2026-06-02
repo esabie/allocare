@@ -120,12 +120,22 @@ export default function PatientMAR({ patientSlug = 'cr-88210', stats = {} }) {
                             <ProfileMenu />
                         </header>
 
-                        <div className="mb-4 flex items-center gap-2 text-xs font-medium text-slate-500">
-                            <Link href={route('dashboard')} className="hover:text-slate-700">Dashboard</Link>
-                            <span>/</span>
-                            <Link href={route('patients')} className="hover:text-slate-700">Patients</Link>
-                            <span>/</span>
-                            <span className="text-slate-900">eMAR</span>
+                        <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+                            <div className="flex items-center gap-2 text-xs font-medium text-slate-500">
+                                <Link href={route('dashboard')} className="hover:text-slate-700">Dashboard</Link>
+                                <span>/</span>
+                                <Link href={route('patients')} className="hover:text-slate-700">Patients</Link>
+                                <span>/</span>
+                                <Link href={route('patients.show', patientSlug)} className="hover:text-slate-700">Profile</Link>
+                                <span>/</span>
+                                <span className="text-slate-900">eMAR</span>
+                            </div>
+                            <a
+                                href={route('patients.mar.monthly-chart.pdf', { patient: patientSlug })}
+                                className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+                            >
+                                Download monthly MAR chart (PDF)
+                            </a>
                         </div>
 
                         {/* Stats overview */}
@@ -134,6 +144,7 @@ export default function PatientMAR({ patientSlug = 'cr-88210', stats = {} }) {
                             <StatCard label="Given Today" value={stats.givenToday || 0} accent="text-emerald-700" />
                             <StatCard label="Due" value={stats.dueToday || 0} accent="text-blue-700" />
                             <StatCard label="Refused" value={stats.refusedToday || 0} accent="text-red-600" />
+                            <StatCard label="Delayed" value={stats.delayedToday || 0} accent="text-orange-600" />
                             {stats.overdueReminders > 0 && (
                                 <StatCard label="Overdue" value={stats.overdueReminders} accent="text-red-700" />
                             )}

@@ -1,5 +1,7 @@
-import { Head, Link, router, usePage } from '@inertiajs/react';
+import { Head, Link, usePage } from '@inertiajs/react';
 import { useCallback, useEffect, useState } from 'react';
+import { routerPostWithOffline } from '@/utils/offlineQueue';
+import ConfirmDialog from '@/Components/ConfirmDialog';
 import ApplicationLogo from '@/Components/ApplicationLogo';
 import AppHeaderNav from '@/Components/AppHeaderNav';
 import ProfileMenu from '@/Components/ProfileMenu';
@@ -27,7 +29,7 @@ const FREQUENCY_OPTIONS = [
     { value: 'custom', label: 'Custom Times' },
 ];
 
-const STATUS_OPTIONS = ['Given', 'Due', 'Refused', 'Omitted', 'Self-Administered'];
+const STATUS_OPTIONS = ['Given', 'Due', 'Refused', 'Omitted', 'Delayed', 'Self-Administered'];
 
 
 function withRowIds(list) {
@@ -46,10 +48,21 @@ function statusBadgeClass(status) {
     if (s === 'given' || s === 'self-administered' || s === 'self_administered') return 'bg-emerald-100 text-emerald-700';
     if (s === 'refused') return 'bg-red-100 text-red-700';
     if (s === 'omitted') return 'bg-amber-100 text-amber-700';
+    if (s === 'delayed') return 'bg-orange-100 text-orange-800';
     return 'bg-slate-100 text-slate-600';
 }
 
-export default function PatientMARDetail({ patientSlug = 'cr-88210', marSlug = 'today-mar', initialRows = [], prnMedications = [], reminders = [] }) {
+export default function PatientMARDetail({
+    patientSlug = 'cr-88210',
+    marSlug = 'today-mar',
+    initialRows = [],
+    prnMedications = [],
+    reminders = [],
+    witnessStaff = [],
+    controlledStock = [],
+    inactiveMedications = [],
+    canManageMedications = false,
+}) {
     const authUser = usePage().props?.auth?.user;
     const flash = usePage().props?.flash;
     const errors = usePage().props?.errors;
@@ -57,13 +70,39 @@ export default function PatientMARDetail({ patientSlug = 'cr-88210', marSlug = '
     const currentCarerName = (authUser?.name || `${authUser?.first_name || ''} ${authUser?.surname || ''}`.trim() || 'Current Carer');
 
     const [rows, setRows] = useState(withRowIds(Array.isArray(initialRows) ? initialRows : []));
+    const [prnMeds, setPrnMeds] = useState(Array.isArray(prnMedications) ? prnMedications : []);
     const [saveState, setSaveState] = useState({ type: '', message: '' });
     const [showAddForm, setShowAddForm] = useState(false);
+    const [deactivatingId, setDeactivatingId] = useState(null);
+    const [reactivatingId, setReactivatingId] = useState(null);
+    const [clearingMar, setClearingMar] = useState(false);
+    const [confirmDialog, setConfirmDialog] = useState(null);
+    const [isOnline, setIsOnline] = useState(typeof navigator !== 'undefined' ? navigator.onLine : true);
+    const [stockForm, setStockForm] = useState({ medicationId: '', movement_type: 'receipt', quantity: '', notes: '' });
     const [newMed, setNewMed] = useState({ name: '', route: 'Oral', dose: '', frequency: 'once_daily', is_prn: false, is_controlled: false, prn_indication: '', prn_max_daily_doses: '', scheduled_times: [], custom_time: '' });
+
+    useEffect(() => {
+        const onOnline = () => setIsOnline(true);
+        const onOffline = () => setIsOnline(false);
+        window.addEventListener('online', onOnline);
+        window.addEventListener('offline', onOffline);
+        return () => {
+            window.removeEventListener('online', onOnline);
+            window.removeEventListener('offline', onOffline);
+        };
+    }, []);
 
     useEffect(() => {
         if (flash?.success) setSaveState({ type: 'success', message: flash.success });
     }, [flash?.success]);
+
+    useEffect(() => {
+        setRows(withRowIds(Array.isArray(initialRows) ? initialRows : []));
+    }, [initialRows]);
+
+    useEffect(() => {
+        setPrnMeds(Array.isArray(prnMedications) ? prnMedications : []);
+    }, [prnMedications]);
 
     const updateRow = useCallback((rowIndex, field, value) => {
         setRows((prev) => {
@@ -86,15 +125,33 @@ export default function PatientMARDetail({ patientSlug = 'cr-88210', marSlug = '
             status: row.status,
             reason: row.reason || null,
             witness_name: row.witness_name || null,
+            witness_user_id: row.witness_user_id || null,
             is_prn_dose: row.is_prn || false,
         }));
 
-        router.post(route('patients.mar.save', { patient: patientSlug, mar: marSlug }), { rows: payload }, {
-            preserveScroll: true,
-            onStart: () => setSaveState({ type: 'saving', message: 'Saving eMAR...' }),
+        setSaveState({ type: 'saving', message: isOnline ? 'Saving eMAR...' : 'Queuing eMAR for sync...' });
+        routerPostWithOffline(route('patients.mar.save', { patient: patientSlug, mar: marSlug }), { rows: payload }, {
             onSuccess: () => setSaveState({ type: 'success', message: 'eMAR saved successfully.' }),
-            onError: (errs) => setSaveState({ type: 'error', message: errs?.mar || 'Unable to save eMAR. Please try again.' }),
+            onQueued: () => setSaveState({ type: 'success', message: 'Saved offline — will sync when connection returns.' }),
+            onError: () => setSaveState({ type: 'error', message: 'Unable to save eMAR. Please try again.' }),
         });
+    };
+
+    const submitStock = (event) => {
+        event.preventDefault();
+        if (!stockForm.medicationId) return;
+        routerPostWithOffline(
+            route('patients.medications.stock', { patient: patientSlug, medication: stockForm.medicationId }),
+            {
+                movement_type: stockForm.movement_type,
+                quantity: parseFloat(stockForm.quantity, 10),
+                notes: stockForm.notes || null,
+            },
+            {
+                onSuccess: () => setStockForm({ medicationId: '', movement_type: 'receipt', quantity: '', notes: '' }),
+                onQueued: () => setSaveState({ type: 'success', message: 'Stock movement saved offline — will sync when connection returns.' }),
+            },
+        );
     };
 
     const addMedicationRow = () => {
@@ -116,11 +173,15 @@ export default function PatientMARDetail({ patientSlug = 'cr-88210', marSlug = '
             prn_max_daily_doses: newMed.prn_max_daily_doses ? parseInt(newMed.prn_max_daily_doses, 10) : null,
             scheduled_times: newMed.scheduled_times.length > 0 ? newMed.scheduled_times : null,
         };
-        router.post(route('patients.medications.store', { patient: patientSlug }), data, {
-            preserveScroll: true,
+        routerPostWithOffline(route('patients.medications.store', { patient: patientSlug }), data, {
             onSuccess: () => {
                 setShowAddForm(false);
                 setNewMed({ name: '', route: 'Oral', dose: '', frequency: 'once_daily', is_prn: false, is_controlled: false, prn_indication: '', prn_max_daily_doses: '', scheduled_times: [], custom_time: '' });
+            },
+            onQueued: () => {
+                setShowAddForm(false);
+                setNewMed({ name: '', route: 'Oral', dose: '', frequency: 'once_daily', is_prn: false, is_controlled: false, prn_indication: '', prn_max_daily_doses: '', scheduled_times: [], custom_time: '' });
+                setSaveState({ type: 'success', message: 'Medication saved offline — will sync when connection returns.' });
             },
         });
     };
@@ -128,6 +189,115 @@ export default function PatientMARDetail({ patientSlug = 'cr-88210', marSlug = '
     const addCustomTime = () => {
         if (newMed.custom_time) {
             setNewMed((prev) => ({ ...prev, scheduled_times: [...prev.scheduled_times, prev.custom_time], custom_time: '' }));
+        }
+    };
+
+    const closeConfirmDialog = () => {
+        if (deactivatingId || reactivatingId || clearingMar) {
+            return;
+        }
+        setConfirmDialog(null);
+    };
+
+    const submitReactivate = (medicationId, medicationName) => {
+        if (reactivatingId) {
+            return;
+        }
+        setReactivatingId(medicationId);
+        routerPostWithOffline(
+            route('patients.medications.reactivate', { patient: patientSlug, medication: medicationId }),
+            { mar: marSlug },
+            {
+                onSuccess: () => setReactivatingId(null),
+                onQueued: () => {
+                    setReactivatingId(null);
+                    setSaveState({ type: 'success', message: 'Reactivate queued — will sync when connection returns.' });
+                },
+                onError: () => setReactivatingId(null),
+            },
+        );
+    };
+
+    const openClearMarConfirm = () => {
+        setConfirmDialog({
+            type: 'clear-mar',
+            title: 'Clear today\'s MAR?',
+            message: 'All administration records for today will be removed and statuses will reset to Due. This cannot be undone.',
+            confirmLabel: 'Clear today\'s MAR',
+        });
+    };
+
+    const openDeactivateConfirm = (medicationId, medicationName) => {
+        if (deactivatingId) {
+            return;
+        }
+        setConfirmDialog({
+            type: 'deactivate',
+            medicationId,
+            medicationName,
+            title: `Remove ${medicationName}?`,
+            message: 'The medication record is kept in the system but will be hidden from future eMAR charts.',
+            confirmLabel: 'Deactivate',
+        });
+    };
+
+    const handleConfirmDialog = () => {
+        if (!confirmDialog) {
+            return;
+        }
+
+        if (confirmDialog.type === 'clear-mar') {
+            setClearingMar(true);
+            routerPostWithOffline(route('patients.mar.clear-today', { patient: patientSlug, mar: marSlug }), {}, {
+                onSuccess: () => {
+                    setRows((prev) => prev.map((row) => ({
+                        ...row,
+                        status: 'Due',
+                        by: '-',
+                        reason: null,
+                        witness_user_id: null,
+                        witness_name: null,
+                    })));
+                    setClearingMar(false);
+                    setConfirmDialog(null);
+                },
+                onQueued: () => {
+                    setSaveState({ type: 'success', message: 'Clear MAR queued — will sync when connection returns.' });
+                    setClearingMar(false);
+                    setConfirmDialog(null);
+                },
+                onError: () => {
+                    setClearingMar(false);
+                    setConfirmDialog(null);
+                },
+            });
+            return;
+        }
+
+        if (confirmDialog.type === 'deactivate') {
+            const { medicationId } = confirmDialog;
+            setDeactivatingId(medicationId);
+            routerPostWithOffline(
+                route('patients.medications.deactivate', { patient: patientSlug, medication: medicationId }),
+                { mar: marSlug },
+                {
+                    onSuccess: () => {
+                        setRows((prev) => prev.filter((row) => row.id !== medicationId));
+                        setPrnMeds((prev) => prev.filter((prn) => prn.id !== medicationId));
+                        setDeactivatingId(null);
+                        setConfirmDialog(null);
+                    },
+                    onQueued: () => {
+                        setSaveState({ type: 'success', message: 'Deactivate queued — will sync when connection returns.' });
+                        setDeactivatingId(null);
+                        setConfirmDialog(null);
+                    },
+                    onError: () => {
+                        setDeactivatingId(null);
+                        setConfirmDialog(null);
+                    },
+                },
+            );
         }
     };
 
@@ -213,6 +383,15 @@ export default function PatientMARDetail({ patientSlug = 'cr-88210', marSlug = '
                                     <button type="button" onClick={addMedicationRow} className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700">
                                         Add Medication
                                     </button>
+                                    {canManageMedications && (
+                                        <button
+                                            type="button"
+                                            onClick={openClearMarConfirm}
+                                            className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-1.5 text-xs font-semibold text-rose-700 hover:bg-rose-100"
+                                        >
+                                            Clear today&apos;s MAR
+                                        </button>
+                                    )}
                                     <button type="button" onClick={saveMarSnapshot} className="rounded-lg bg-slate-900 px-3 py-1.5 text-xs font-semibold text-white">
                                         Save eMAR
                                     </button>
@@ -229,6 +408,61 @@ export default function PatientMARDetail({ patientSlug = 'cr-88210', marSlug = '
                                 <div className="mb-4 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-800">{errors.mar}</div>
                             )}
 
+                            {!isOnline && (
+                                <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+                                    Offline mode — eMAR entries will sync when you reconnect.
+                                </div>
+                            )}
+
+                            {controlledStock.length > 0 && (
+                                <div className="mb-6 rounded-xl border border-amber-200 bg-amber-50/50 p-4">
+                                    <h3 className="text-sm font-semibold text-amber-900">Controlled drug stock</h3>
+                                    <ul className="mt-2 space-y-1 text-sm text-amber-950">
+                                        {controlledStock.map((item) => (
+                                            <li key={item.medicationId}>
+                                                {item.medicationName}: <strong>{item.balance}</strong> {item.unit}
+                                                {item.lowStock && <span className="ml-2 text-xs font-bold text-rose-700">LOW</span>}
+                                            </li>
+                                        ))}
+                                    </ul>
+                                    <form onSubmit={submitStock} className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-4">
+                                        <select
+                                            value={stockForm.medicationId}
+                                            onChange={(e) => setStockForm({ ...stockForm, medicationId: e.target.value })}
+                                            className="rounded-md border border-amber-200 text-sm"
+                                            required
+                                        >
+                                            <option value="">Medication</option>
+                                            {controlledStock.map((item) => (
+                                                <option key={item.medicationId} value={item.medicationId}>{item.medicationName}</option>
+                                            ))}
+                                        </select>
+                                        <select
+                                            value={stockForm.movement_type}
+                                            onChange={(e) => setStockForm({ ...stockForm, movement_type: e.target.value })}
+                                            className="rounded-md border border-amber-200 text-sm"
+                                        >
+                                            <option value="receipt">Receipt</option>
+                                            <option value="adjustment">Adjustment</option>
+                                            <option value="destruction">Destruction</option>
+                                            <option value="reconciliation">Reconciliation</option>
+                                        </select>
+                                        <input
+                                            type="number"
+                                            step="0.01"
+                                            required
+                                            placeholder="Qty"
+                                            value={stockForm.quantity}
+                                            onChange={(e) => setStockForm({ ...stockForm, quantity: e.target.value })}
+                                            className="rounded-md border border-amber-200 text-sm"
+                                        />
+                                        <button type="submit" className="rounded-md bg-amber-700 px-3 py-2 text-xs font-semibold text-white hover:bg-amber-800">
+                                            Update stock
+                                        </button>
+                                    </form>
+                                </div>
+                            )}
+
                             <div className="overflow-x-auto rounded-xl border border-slate-200">
                                 <table className="min-w-full divide-y divide-slate-200 text-sm">
                                     <thead className="bg-slate-50">
@@ -241,11 +475,12 @@ export default function PatientMARDetail({ patientSlug = 'cr-88210', marSlug = '
                                             <th className="px-3 py-3">Reason</th>
                                             <th className="px-3 py-3">Witness</th>
                                             <th className="px-3 py-3">By</th>
+                                            {canManageMedications && <th className="px-3 py-3">Actions</th>}
                                         </tr>
                                     </thead>
                                     <tbody className="divide-y divide-slate-100 bg-white">
                                         {rows.map((row, rowIndex) => {
-                                            const needsReason = row.status === 'Refused' || row.status === 'Omitted';
+                                            const needsReason = row.status === 'Refused' || row.status === 'Omitted' || row.status === 'Delayed';
                                             const needsWitness = row.is_controlled && row.status === 'Given';
                                             return (
                                                 <tr key={row._rowId || `${rowIndex}`}>
@@ -275,10 +510,55 @@ export default function PatientMARDetail({ patientSlug = 'cr-88210', marSlug = '
                                                     </td>
                                                     <td className="px-3 py-2">
                                                         {needsWitness ? (
-                                                            <input value={row.witness_name || ''} onChange={(e) => updateRow(rowIndex, 'witness_name', e.target.value)} className="w-full min-w-[100px] rounded-md border border-amber-200 bg-amber-50 px-2 py-1 text-xs" placeholder="Witness name" />
+                                                            <select
+                                                                value={row.witness_user_id || ''}
+                                                                onChange={(e) => {
+                                                                    const id = e.target.value ? parseInt(e.target.value, 10) : null;
+                                                                    const staff = witnessStaff.find((s) => s.id === id);
+                                                                    setRows((prev) => {
+                                                                        const next = [...prev];
+                                                                        next[rowIndex] = {
+                                                                            ...next[rowIndex],
+                                                                            witness_user_id: id,
+                                                                            witness_name: staff?.name || '',
+                                                                        };
+                                                                        return next;
+                                                                    });
+                                                                }}
+                                                                className="w-full min-w-[120px] rounded-md border border-amber-200 bg-amber-50 px-2 py-1 text-xs"
+                                                            >
+                                                                <option value="">Select witness</option>
+                                                                {witnessStaff
+                                                                    .filter((s) => s.id !== authUser?.id)
+                                                                    .map((s) => (
+                                                                        <option key={s.id} value={s.id}>{s.name}</option>
+                                                                    ))}
+                                                            </select>
                                                         ) : <span className="text-xs text-slate-300">—</span>}
                                                     </td>
                                                     <td className="px-3 py-2 text-xs text-slate-600">{row.by || '-'}</td>
+                                                    {canManageMedications && (
+                                                        <td className="px-3 py-2">
+                                                            {row.id ? (
+                                                                <button
+                                                                    type="button"
+                                                                    disabled={deactivatingId === row.id}
+                                                                    onClick={() => openDeactivateConfirm(row.id, row.medicine || 'medication')}
+                                                                    className="rounded-md border border-slate-200 px-2 py-1 text-[10px] font-semibold text-slate-600 hover:bg-slate-50 disabled:opacity-50"
+                                                                >
+                                                                    {deactivatingId === row.id ? 'Removing…' : 'Deactivate'}
+                                                                </button>
+                                                            ) : (
+                                                                <button
+                                                                    type="button"
+                                                                    onClick={() => setRows((prev) => prev.filter((_, i) => i !== rowIndex))}
+                                                                    className="rounded-md border border-slate-200 px-2 py-1 text-[10px] font-semibold text-slate-600 hover:bg-slate-50"
+                                                                >
+                                                                    Remove row
+                                                                </button>
+                                                            )}
+                                                        </td>
+                                                    )}
                                                 </tr>
                                             );
                                         })}
@@ -286,6 +566,36 @@ export default function PatientMARDetail({ patientSlug = 'cr-88210', marSlug = '
                                 </table>
                             </div>
                         </section>
+
+                        {canManageMedications && inactiveMedications.length > 0 && (
+                            <section className="mb-6 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+                                <h2 className="mb-1 text-lg font-semibold text-slate-900">Inactive medications</h2>
+                                <p className="mb-4 text-sm text-slate-500">
+                                    Deactivated medicines are hidden from the chart but kept on record. Reactivate to restore them to the eMAR.
+                                </p>
+                                <ul className="divide-y divide-slate-100">
+                                    {inactiveMedications.map((med) => (
+                                        <li key={med.id} className="flex flex-wrap items-center justify-between gap-3 py-3">
+                                            <div>
+                                                <p className="font-semibold text-slate-800">{med.name}</p>
+                                                <p className="text-xs text-slate-500">
+                                                    {[med.dose, med.route].filter(Boolean).join(' · ')}
+                                                    {med.deactivatedAtLabel ? ` · Updated ${med.deactivatedAtLabel}` : ''}
+                                                </p>
+                                            </div>
+                                            <button
+                                                type="button"
+                                                disabled={reactivatingId === med.id}
+                                                onClick={() => submitReactivate(med.id, med.name)}
+                                                className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs font-semibold text-emerald-800 hover:bg-emerald-100 disabled:opacity-50"
+                                            >
+                                                {reactivatingId === med.id ? 'Restoring…' : 'Reactivate'}
+                                            </button>
+                                        </li>
+                                    ))}
+                                </ul>
+                            </section>
+                        )}
 
                         {/* Add Medication Form */}
                         {showAddForm && (
@@ -358,25 +668,37 @@ export default function PatientMARDetail({ patientSlug = 'cr-88210', marSlug = '
                         )}
 
                         {/* PRN Medications */}
-                        {Array.isArray(prnMedications) && prnMedications.length > 0 && (
+                        {Array.isArray(prnMeds) && prnMeds.length > 0 && (
                             <section className="rounded-2xl border border-blue-200 bg-white p-5 shadow-sm">
                                 <h2 className="mb-3 text-lg font-semibold text-slate-900">PRN Medications (As Needed)</h2>
                                 <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-                                    {prnMedications.map((prn) => (
+                                    {prnMeds.map((prn) => (
                                         <div key={prn.id} className="rounded-xl border border-slate-200 bg-slate-50 p-3">
                                             <p className="text-sm font-semibold text-slate-900">{prn.name}</p>
                                             <p className="text-xs text-slate-500">{prn.dose} — {prn.route}</p>
                                             {prn.prn_indication && <p className="mt-1 text-[11px] text-blue-600">Indication: {prn.prn_indication}</p>}
-                                            <div className="mt-2 flex items-center justify-between">
+                                            <div className="mt-2 flex items-center justify-between gap-2">
                                                 <span className="text-[11px] text-slate-400">
                                                     Today: {prn.today_count || 0}{prn.prn_max_daily_doses ? ` / ${prn.prn_max_daily_doses}` : ''}
                                                 </span>
-                                                {(!prn.prn_max_daily_doses || (prn.today_count || 0) < prn.prn_max_daily_doses) && (
-                                                    <span className="rounded-full bg-blue-100 px-2 py-0.5 text-[10px] font-semibold text-blue-700">Available</span>
-                                                )}
-                                                {prn.prn_max_daily_doses && (prn.today_count || 0) >= prn.prn_max_daily_doses && (
-                                                    <span className="rounded-full bg-red-100 px-2 py-0.5 text-[10px] font-semibold text-red-700">Max Reached</span>
-                                                )}
+                                                <div className="flex items-center gap-2">
+                                                    {(!prn.prn_max_daily_doses || (prn.today_count || 0) < prn.prn_max_daily_doses) && (
+                                                        <span className="rounded-full bg-blue-100 px-2 py-0.5 text-[10px] font-semibold text-blue-700">Available</span>
+                                                    )}
+                                                    {prn.prn_max_daily_doses && (prn.today_count || 0) >= prn.prn_max_daily_doses && (
+                                                        <span className="rounded-full bg-red-100 px-2 py-0.5 text-[10px] font-semibold text-red-700">Max Reached</span>
+                                                    )}
+                                                    {canManageMedications && (
+                                                        <button
+                                                            type="button"
+                                                            disabled={deactivatingId === prn.id}
+                                                            onClick={() => openDeactivateConfirm(prn.id, prn.name)}
+                                                            className="rounded-md border border-slate-200 px-2 py-0.5 text-[10px] font-semibold text-slate-600 hover:bg-white disabled:opacity-50"
+                                                        >
+                                                            {deactivatingId === prn.id ? 'Removing…' : 'Deactivate'}
+                                                        </button>
+                                                    )}
+                                                </div>
                                             </div>
                                         </div>
                                     ))}
@@ -386,6 +708,17 @@ export default function PatientMARDetail({ patientSlug = 'cr-88210', marSlug = '
                     </main>
                 </div>
             </div>
+
+            <ConfirmDialog
+                show={Boolean(confirmDialog)}
+                title={confirmDialog?.title}
+                message={confirmDialog?.message}
+                confirmLabel={confirmDialog?.confirmLabel}
+                confirmVariant="danger"
+                processing={clearingMar || Boolean(deactivatingId)}
+                onClose={closeConfirmDialog}
+                onConfirm={handleConfirmDialog}
+            />
         </>
     );
 }

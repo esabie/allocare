@@ -51,6 +51,8 @@ class HandleInertiaRequests extends Middleware
             ],
             'flash' => [
                 'success' => fn () => $request->session()->get('success'),
+                'suggest_gdpr_breach' => fn () => $request->session()->get('suggest_gdpr_breach'),
+                'gdprBreachPrefill' => fn () => $request->session()->get('gdprBreachPrefill'),
             ],
         ];
     }

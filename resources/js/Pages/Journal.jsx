@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Head, Link, router, useForm, usePage } from '@inertiajs/react';
+import { routerPostWithOffline } from '@/utils/offlineQueue';
 import DashboardSidebar from '@/Components/DashboardSidebar';
 import InputError from '@/Components/InputError';
 import InputLabel from '@/Components/InputLabel';
@@ -14,8 +15,9 @@ const filters = [
 export default function Journal({ entries = [], patients = [], filter = 'all' }) {
     const successMessage = usePage().props?.flash?.success;
     const [showForm, setShowForm] = useState(false);
+    const [queueMessage, setQueueMessage] = useState('');
 
-    const { data, setData, post, processing, errors, reset } = useForm({
+    const { data, setData, processing, errors, reset } = useForm({
         patient_id: patients[0]?.id ? String(patients[0].id) : '',
         body: '',
         filter,
@@ -29,15 +31,28 @@ export default function Journal({ entries = [], patients = [], filter = 'all' })
         router.get(route('journal'), { filter: nextFilter }, { preserveState: true, preserveScroll: true });
     };
 
-    const submitNote = (event) => {
+    const submitNote = async (event) => {
         event.preventDefault();
-        post(route('journal.store'), {
-            preserveScroll: true,
-            onSuccess: () => {
-                reset('body');
-                setShowForm(false);
+        setQueueMessage('');
+        await routerPostWithOffline(
+            route('journal.store'),
+            {
+                patient_id: Number(data.patient_id),
+                body: data.body,
+                filter: data.filter,
             },
-        });
+            {
+                onSuccess: () => {
+                    reset('body');
+                    setShowForm(false);
+                },
+                onQueued: () => {
+                    reset('body');
+                    setShowForm(false);
+                    setQueueMessage('Saved offline — care note will sync when connection returns.');
+                },
+            },
+        );
     };
 
     return (
@@ -54,9 +69,9 @@ export default function Journal({ entries = [], patients = [], filter = 'all' })
                             <ProfileMenu />
                         </header>
 
-                        {successMessage && (
+                        {(successMessage || queueMessage) && (
                             <div className="mb-4 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-medium text-emerald-800">
-                                {successMessage}
+                                {queueMessage || successMessage}
                             </div>
                         )}
 

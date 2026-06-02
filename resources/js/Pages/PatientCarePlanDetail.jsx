@@ -183,7 +183,10 @@ export default function PatientCarePlanDetail({ patientSlug = 'sarah-jenkins', p
         postWithOfflineQueue(
             route('patients.careplans.save', { patient: patientSlug, plan: planSlug }),
             { data },
-            {}
+            {
+                onQueued: () => setValidationMessage('Saved offline — care plan will sync when connection returns.'),
+                onSuccess: () => setValidationMessage('Care plan saved successfully.'),
+            },
         );
     };
 

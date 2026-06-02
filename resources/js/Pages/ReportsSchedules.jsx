@@ -97,13 +97,15 @@ export default function ReportsSchedules({ stats = {}, byStaff = [], byPatient =
                         </section>
 
                         {/* Stats cards */}
-                        <section className="mb-6 grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-7">
+                        <section className="mb-6 grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-9">
                             <StatCard label="Total Shifts" value={stats.totalShifts || 0} />
                             <StatCard label="Completed" value={stats.completedShifts || 0} accent="text-emerald-700" />
                             <StatCard label="Missed" value={stats.missedShifts || 0} accent="text-rose-700" />
                             <StatCard label="Overdue" value={stats.overdueShifts || 0} accent="text-orange-600" />
                             <StatCard label="Upcoming" value={stats.upcomingShifts || 0} accent="text-blue-700" />
                             <StatCard label="In Progress" value={stats.inProgressShifts || 0} accent="text-amber-700" />
+                            <StatCard label="Late Starts" value={stats.lateStarts || 0} accent="text-amber-700" />
+                            <StatCard label="Early Leaves" value={stats.earlyLeaves || 0} accent="text-rose-700" />
                             <StatCard label="Total Hours" value={`${stats.totalHours || 0}h`} accent="text-slate-900" />
                         </section>
 
@@ -193,13 +195,14 @@ export default function ReportsSchedules({ stats = {}, byStaff = [], byPatient =
                                             <th className="border border-slate-200 px-3 py-2">Patient</th>
                                             <th className="border border-slate-200 px-3 py-2">Carer</th>
                                             <th className="border border-slate-200 px-3 py-2">Duration</th>
+                                            <th className="border border-slate-200 px-3 py-2">ECM</th>
                                             <th className="border border-slate-200 px-3 py-2">Status</th>
                                         </tr>
                                     </thead>
                                     <tbody>
                                         {shifts.length === 0 ? (
                                             <tr>
-                                                <td colSpan={6} className="border border-slate-200 px-3 py-6 text-center text-slate-500">
+                                                <td colSpan={7} className="border border-slate-200 px-3 py-6 text-center text-slate-500">
                                                     No shifts found for the selected period.
                                                 </td>
                                             </tr>
@@ -211,6 +214,11 @@ export default function ReportsSchedules({ stats = {}, byStaff = [], byPatient =
                                                     <td className="border border-slate-200 px-3 py-2">{shift.patient}</td>
                                                     <td className="border border-slate-200 px-3 py-2">{shift.carer}</td>
                                                     <td className="border border-slate-200 px-3 py-2">{shift.duration >= 60 ? `${Math.floor(shift.duration / 60)}h ${shift.duration % 60}m` : `${shift.duration} mins`}</td>
+                                                    <td className="border border-slate-200 px-3 py-2 text-xs">
+                                                        {shift.lateByMinutes > 0 && <div>Late: {shift.lateByMinutes}m</div>}
+                                                        {shift.leftEarlyByMinutes > 0 && <div>Early: {shift.leftEarlyByMinutes}m</div>}
+                                                        {shift.lateByMinutes === 0 && shift.leftEarlyByMinutes === 0 && <div className="text-slate-400">On time</div>}
+                                                    </td>
                                                     <td className="border border-slate-200 px-3 py-2">
                                                         <span className={`inline-block rounded-full px-2.5 py-1 text-[10px] font-semibold ${statusBadge(shift.status)}`}>
                                                             {shift.status}

@@ -448,7 +448,7 @@ export default function PatientDocumentDetail({ patientSlug = 'cr-88210', docume
                     setIsSubmitted(true);
                     setIsEditing(false);
                 },
-            }
+            },
         );
     };
 

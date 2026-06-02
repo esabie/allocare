@@ -15,6 +15,16 @@ class PatientSchedule extends Model
         'assigned_user_id',
         'start_at',
         'end_at',
+        'checked_in_at',
+        'checked_out_at',
+        'check_in_latitude',
+        'check_in_longitude',
+        'check_out_latitude',
+        'check_out_longitude',
+        'check_in_distance_metres',
+        'check_out_distance_metres',
+        'late_by_minutes',
+        'left_early_by_minutes',
         'purpose',
         'notes',
         'status',
@@ -24,6 +34,8 @@ class PatientSchedule extends Model
     protected $casts = [
         'start_at' => 'datetime',
         'end_at' => 'datetime',
+        'checked_in_at' => 'datetime',
+        'checked_out_at' => 'datetime',
     ];
 
     public function patient(): BelongsTo
@@ -34,6 +46,11 @@ class PatientSchedule extends Model
     public function assignedUser(): BelongsTo
     {
         return $this->belongsTo(User::class, 'assigned_user_id');
+    }
+
+    public function visitTasks(): \Illuminate\Database\Eloquent\Relations\HasMany
+    {
+        return $this->hasMany(ScheduleVisitTask::class, 'patient_schedule_id')->orderBy('sort_order');
     }
 }
 
