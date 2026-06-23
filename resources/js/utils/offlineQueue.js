@@ -107,6 +107,16 @@ function buildHeaders(contentType) {
     return headers;
 }
 
+function isSuccessfulFetchResponse(response) {
+    if (!response) return false;
+    if (response.ok) return true;
+    // Laravel redirect()->back() after PATCH must not be followed — that replays PATCH on the profile URL (405).
+    if (response.status === 302 || response.status === 303) return true;
+    // Opaque redirect responses (some browsers) still mean the server accepted the request.
+    if (response.type === 'opaqueredirect') return true;
+    return false;
+}
+
 async function sendJob(job) {
     const method = (job.method || 'POST').toUpperCase();
     const contentType = job.contentType || 'json';
@@ -114,6 +124,7 @@ async function sendJob(job) {
         method,
         credentials: 'same-origin',
         headers: buildHeaders(contentType),
+        redirect: 'manual',
     };
 
     if (job.bodyType === 'form') {
@@ -257,7 +268,7 @@ export async function flushOfflineQueue() {
     for (const job of queue) {
         try {
             const response = await sendJob(job);
-            if (response.ok) {
+            if (isSuccessfulFetchResponse(response)) {
                 flushed += 1;
                 continue;
             }
@@ -309,7 +320,7 @@ export async function requestWithOfflineQueue({
                 response = await sendJob({ url, method, payload, contentType, bodyType });
             }
         }
-        if (response.ok) {
+        if (isSuccessfulFetchResponse(response)) {
             onSuccess?.();
             return { queued: false, ok: true };
         }
@@ -363,7 +374,7 @@ export async function postFormWithOfflineQueue(url, fields, { file, fileField = 
             form.append(fileField, file);
 
             try {
-                const response = await fetch(url, {
+                let response = await fetch(url, {
                     method: 'POST',
                     credentials: 'same-origin',
                     headers: {
@@ -373,9 +384,33 @@ export async function postFormWithOfflineQueue(url, fields, { file, fileField = 
                     },
                     body: form,
                 });
-                if (response.ok) {
-                    handlers.onSuccess?.();
-                    return { queued: false, ok: true };
+                if (response.status === 419) {
+                    const refreshed = await refreshCsrfToken();
+                    if (refreshed) {
+                        response = await fetch(url, {
+                            method: 'POST',
+                            credentials: 'same-origin',
+                            headers: {
+                                Accept: 'application/json, text/plain, */*',
+                                'X-Requested-With': 'XMLHttpRequest',
+                                'X-CSRF-TOKEN': csrfToken(),
+                            },
+                            body: form,
+                        });
+                    }
+                }
+            if (isSuccessfulFetchResponse(response)) {
+                handlers.onSuccess?.();
+                return { queued: false, ok: true };
+            }
+
+                const errorPayload = await parseErrorPayload(response);
+                if (!shouldQueueResponse(response)) {
+                    if (!handlers.onError) {
+                        notifyRequestError(errorPayload, response);
+                    }
+                    handlers.onError?.(errorPayload, response);
+                    return { queued: false, ok: false, status: response.status, error: errorPayload };
                 }
             } catch {
                 // fall through to queue

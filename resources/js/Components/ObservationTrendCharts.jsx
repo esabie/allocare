@@ -121,15 +121,17 @@ export default function ObservationTrendCharts({ chartData = null }) {
         <section className="mb-6 rounded-2xl bg-white p-5 shadow-sm">
             <div className="mb-4 flex flex-wrap items-end justify-between gap-2">
                 <div>
-                    <h2 className="text-lg font-semibold text-slate-900">Observation trends</h2>
-                    <p className="text-sm text-slate-500">Last 30 days — dashed lines show alert thresholds where applicable.</p>
+                    <h2 className="text-lg font-semibold text-slate-900">NEWS2 &amp; observation trends</h2>
+                    <p className="text-sm text-slate-500">Last 30 days — includes aggregate NEWS2 score trending.</p>
                 </div>
                 <p className="text-xs text-slate-400">
                     {from} to {to}
                 </p>
             </div>
             <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
-                <MiniTrendChart title="Heart rate" unit="bpm" color="text-slate-800" points={series.heart_rate} thresholds={thresholds?.heart_rate} />
+                <MiniTrendChart title="NEWS2 score" unit="" color="text-rose-600" points={series.news2_score} thresholds={thresholds?.news2_score} />
+                <MiniTrendChart title="Respiration rate" unit="/min" color="text-slate-800" points={series.respiration_rate} />
+                <MiniTrendChart title="Pulse" unit="bpm" color="text-slate-800" points={series.heart_rate} thresholds={thresholds?.heart_rate} />
                 <MiniTrendChart title="BP systolic" unit="mmHg" color="text-rose-600" points={series.bp_systolic} thresholds={thresholds?.bp_systolic} />
                 <MiniTrendChart title="SpO₂" unit="%" color="text-emerald-600" points={series.spo2} thresholds={thresholds?.spo2} />
                 <MiniTrendChart title="Temperature" unit="°C" color="text-orange-600" points={series.temperature_celsius} thresholds={thresholds?.temperature} />

@@ -127,7 +127,7 @@ function getStatusMeta(entry) {
     };
 }
 
-export default function Schedules({ patients = [], staff = [], entries = [] }) {
+export default function Schedules({ patients = [], staff = [], entries = [], canManageRostering = false }) {
     const flashSuccess = usePage().props?.flash?.success;
     const [queueMessage, setQueueMessage] = useState('');
     const [submitErrorMessage, setSubmitErrorMessage] = useState('');
@@ -248,6 +248,23 @@ export default function Schedules({ patients = [], staff = [], entries = [] }) {
         purpose: '',
         notes: '',
     });
+
+    const selectedPatient = useMemo(
+        () => patients.find((patient) => patient.urlKey === data.patient_url_key) || null,
+        [patients, data.patient_url_key],
+    );
+
+    const eligibleStaff = useMemo(() => {
+        const careGroup = selectedPatient?.careGroup;
+        if (!careGroup) {
+            return staff;
+        }
+
+        return staff.filter((member) => {
+            const groups = Array.isArray(member.assignedCareGroups) ? member.assignedCareGroups : [];
+            return groups.includes(careGroup);
+        });
+    }, [staff, selectedPatient]);
 
     const submit = async (event) => {
         event.preventDefault();
@@ -482,13 +499,15 @@ export default function Schedules({ patients = [], staff = [], entries = [] }) {
                                     >
                                         Today
                                     </button>
-                                    <button
-                                        type="button"
-                                        onClick={() => setShowNewBooking(true)}
-                                        className="rounded-lg bg-slate-900 px-4 py-1.5 text-sm font-semibold text-white hover:bg-slate-800"
-                                    >
-                                        New Booking
-                                    </button>
+                                    {canManageRostering && (
+                                        <button
+                                            type="button"
+                                            onClick={() => setShowNewBooking(true)}
+                                            className="rounded-lg bg-slate-900 px-4 py-1.5 text-sm font-semibold text-white hover:bg-slate-800"
+                                        >
+                                            New Booking
+                                        </button>
+                                    )}
                                 </div>
                             </div>
 
@@ -572,6 +591,11 @@ export default function Schedules({ patients = [], staff = [], entries = [] }) {
                                                         {patient.name}
                                                     </Link>
                                                     <p className="text-sm text-slate-500">ID: {patient.reference || '#UNASSIGNED'}</p>
+                                                    {patient.lifecycleStatus && patient.lifecycleStatus !== 'active' && (
+                                                        <p className="mt-1 text-xs font-semibold uppercase tracking-wide text-amber-700">
+                                                            {patient.lifecycleStatusLabel || patient.lifecycleStatus}
+                                                        </p>
+                                                    )}
                                                 </td>
                                                 {weekDates.map((date) => {
                                                     const dateKey = toIsoDate(date);
@@ -581,8 +605,8 @@ export default function Schedules({ patients = [], staff = [], entries = [] }) {
                                                         <td
                                                             key={`${patient.urlKey}-${dateKey}`}
                                                             className="border border-slate-100 bg-white p-2 align-top"
-                                                            onDragOver={(event) => event.preventDefault()}
-                                                            onDrop={() => rescheduleEntryToCell(patient.urlKey, dateKey)}
+                                                            onDragOver={(event) => canManageRostering && event.preventDefault()}
+                                                            onDrop={() => canManageRostering && rescheduleEntryToCell(patient.urlKey, dateKey)}
                                                         >
                                                             {dayEntries.length > 0 ? (
                                                                 <div className="space-y-2">
@@ -594,13 +618,13 @@ export default function Schedules({ patients = [], staff = [], entries = [] }) {
                                                                         return (
                                                                             <div
                                                                                 key={cardKey}
-                                                                                draggable={!isOvernightEnd && status.key !== 'done' && status.key !== 'overdue' && status.key !== 'missed' && status.key !== 'upcoming'}
-                                                                                onDragStart={() => !isOvernightEnd && setDraggedEntry(entry)}
+                                                                                draggable={canManageRostering && !isOvernightEnd && status.key !== 'done' && status.key !== 'overdue' && status.key !== 'missed' && status.key !== 'upcoming'}
+                                                                                onDragStart={() => canManageRostering && !isOvernightEnd && setDraggedEntry(entry)}
                                                                                 onDragEnd={() => setDraggedEntry(null)}
                                                                                 onClick={() => {
                                                                                     if (isOvernightEnd) return;
                                                                                     if (status.key === 'overdue') openCompletionModal(entry);
-                                                                                    if (status.key === 'upcoming') openRescheduleModal(entry);
+                                                                                    if (canManageRostering && status.key === 'upcoming') openRescheduleModal(entry);
                                                                                 }}
                                                                                 className={`rounded-xl border p-2 ${status.cardClass} ${isOvernightEnd ? 'border-dashed opacity-90' : (status.key === 'overdue' ? 'cursor-pointer hover:ring-2 hover:ring-purple-300' : status.key === 'upcoming' ? 'cursor-pointer hover:ring-2 hover:ring-indigo-300' : (status.key === 'done' || status.key === 'missed' ? '' : 'cursor-move'))}`}
                                                                             >
@@ -622,7 +646,8 @@ export default function Schedules({ patients = [], staff = [], entries = [] }) {
                                                                         );
                                                                     })}
                                                                 </div>
-                                                            ) : (
+                                                            ) : null}
+                                                            {canManageRostering && patient.isRosterable !== false && (
                                                                 <button
                                                                     type="button"
                                                                     onClick={() => {
@@ -630,10 +655,15 @@ export default function Schedules({ patients = [], staff = [], entries = [] }) {
                                                                         setData('visit_date', dateKey);
                                                                         setShowNewBooking(true);
                                                                     }}
-                                                                    className="flex h-20 w-full items-center justify-center rounded-xl border border-dashed border-slate-200 text-2xl text-slate-300 hover:bg-slate-50"
+                                                                    className={`flex w-full items-center justify-center rounded-xl border border-dashed border-slate-200 text-2xl text-slate-300 hover:bg-slate-50 ${dayEntries.length > 0 ? 'h-10 text-lg' : 'h-20'}`}
                                                                 >
                                                                     +
                                                                 </button>
+                                                            )}
+                                                            {!canManageRostering && dayEntries.length === 0 && (
+                                                                <div className="flex h-20 w-full items-center justify-center rounded-xl border border-dashed border-slate-100 text-xs text-slate-300">
+                                                                    —
+                                                                </div>
                                                             )}
                                                         </td>
                                                     );
@@ -681,11 +711,14 @@ export default function Schedules({ patients = [], staff = [], entries = [] }) {
                                     required
                                 >
                                     <option value="">Select patient</option>
-                                    {patients.map((patient) => (
+                                    {patients.filter((patient) => patient.isRosterable !== false).map((patient) => (
                                         <option key={patient.urlKey} value={patient.urlKey}>{patient.name}</option>
                                     ))}
                                 </select>
                                 {errors.patient_url_key && <p className="mt-1 text-xs text-rose-600">{errors.patient_url_key}</p>}
+                                {selectedPatient?.careGroupLabel && (
+                                    <p className="mt-1 text-xs text-slate-500">Care group: {selectedPatient.careGroupLabel}</p>
+                                )}
                             </div>
 
                             <div>
@@ -697,10 +730,13 @@ export default function Schedules({ patients = [], staff = [], entries = [] }) {
                                     required
                                 >
                                     <option value="">Select staff</option>
-                                    {staff.map((member) => (
+                                    {eligibleStaff.map((member) => (
                                         <option key={member.id} value={member.id}>{member.name} ({member.role})</option>
                                     ))}
                                 </select>
+                                {selectedPatient?.careGroup && eligibleStaff.length === 0 && (
+                                    <p className="mt-1 text-xs text-amber-700">No staff are assigned to this care group. Update staff profiles or change the service user&apos;s care group.</p>
+                                )}
                                 {errors.assigned_user_id && <p className="mt-1 text-xs text-rose-600">{errors.assigned_user_id}</p>}
                             </div>
 

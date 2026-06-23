@@ -3,6 +3,8 @@
 namespace App\Http\Middleware;
 
 use App\Support\AuditTrail;
+use App\Support\Rbac;
+use App\Support\StaffNotifications;
 use Illuminate\Http\Request;
 use Inertia\Middleware;
 
@@ -45,15 +47,34 @@ class HandleInertiaRequests extends Middleware
                     'roles' => $authUser->roles()->pluck('name')->values(),
                     'photo_path' => $authUser->photo_path,
                     'photoUrl' => $authUser->photo_path ? route('employees.photo', $authUser) : null,
-                    'canViewReports' => AuditTrail::canViewReports($authUser),
+                    'canViewReports' => Rbac::canViewReports($authUser),
+                    'canEscalateIncidents' => Rbac::canEscalateIncidents($authUser),
+                    'canSignOffIncidents' => Rbac::canSignOffIncidents($authUser),
+                    'canManageRostering' => Rbac::canManageRostering($authUser),
+                    'canRegisterPatients' => Rbac::canRegisterPatients($authUser),
+                    'canViewStaffDirectory' => Rbac::canViewStaffDirectory($authUser),
+                    'canViewAnalytics' => Rbac::canViewAnalytics($authUser),
+                    'permissions' => Rbac::permissionsFor($authUser),
                     'canViewActivityLog' => AuditTrail::canViewActivityLog($authUser),
                 ] : null,
             ],
             'flash' => [
                 'success' => fn () => $request->session()->get('success'),
+                'rescue_escalation' => fn () => $request->session()->get('rescue_escalation'),
                 'suggest_gdpr_breach' => fn () => $request->session()->get('suggest_gdpr_breach'),
                 'gdprBreachPrefill' => fn () => $request->session()->get('gdprBreachPrefill'),
             ],
+            'managerNotifications' => fn () => $authUser && AuditTrail::canViewReports($authUser)
+                ? [
+                    'count' => $authUser->unreadNotifications()->count(),
+                    'items' => $authUser->unreadNotifications()
+                        ->limit(10)
+                        ->get()
+                        ->map(fn ($notification) => StaffNotifications::map($notification))
+                        ->values()
+                        ->all(),
+                ]
+                : null,
         ];
     }
 }

@@ -13,6 +13,7 @@ class Kernel extends ConsoleKernel
     protected function schedule(Schedule $schedule): void
     {
         $schedule->command('privacy:process-erasure-jobs')->hourly();
+        $schedule->command('medications:process-escalations')->everyMinute();
     }
 
     /**

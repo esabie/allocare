@@ -1,4 +1,5 @@
 import Dropdown from '@/Components/Dropdown';
+import ManagerNotificationBell from '@/Components/ManagerNotificationBell';
 import { usePage } from '@inertiajs/react';
 
 export default function ProfileMenu() {
@@ -15,7 +16,9 @@ export default function ProfileMenu() {
         : 'U';
 
     return (
-        <Dropdown>
+        <div className="flex items-center gap-3">
+            <ManagerNotificationBell />
+            <Dropdown>
             <Dropdown.Trigger>
                 <div className="flex items-center gap-2">
                     <span className="max-w-[180px] truncate text-sm font-medium text-slate-700">{fullName}</span>
@@ -39,5 +42,6 @@ export default function ProfileMenu() {
                 </Dropdown.Link>
             </Dropdown.Content>
         </Dropdown>
+        </div>
     );
 }

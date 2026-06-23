@@ -216,8 +216,8 @@ class PrivacyRequestTest extends TestCase
             ->assertOk()
             ->assertInertia(fn ($page) => $page
                 ->component('ReportsGdpr')
-                ->has('requests', 1)
-                ->where('requests.0.icoReviewOverdue', true));
+                ->has('requests.data', 1)
+                ->where('requests.data.0.icoReviewOverdue', true));
     }
 
     public function test_manager_can_export_sar_pdf_for_linked_patient(): void

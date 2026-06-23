@@ -1,0 +1,126 @@
+<?php
+
+namespace Tests\Feature;
+
+use App\Models\AuditEvent;
+use App\Models\CareJournalEntry;
+use App\Models\Patient;
+use App\Models\PatientIncident;
+use App\Models\PatientVital;
+use App\Models\User;
+use Illuminate\Foundation\Testing\RefreshDatabase;
+use Tests\TestCase;
+
+class PdfExportTest extends TestCase
+{
+    use RefreshDatabase;
+
+    public function test_audit_report_pdf_export_succeeds_and_is_audited(): void
+    {
+        $user = User::factory()->create(['primary_role' => 'care_manager', 'email_verified_at' => now()]);
+
+        $response = $this->actingAs($user)
+            ->get(route('reports.audit.export.pdf'));
+
+        $response->assertOk();
+        $response->assertHeader('content-type', 'application/pdf');
+
+        $this->assertNotNull(
+            AuditEvent::query()->where('action', 'export')->where('subject_type', 'audit_report')->first()
+        );
+    }
+
+    public function test_incident_report_pdf_export_succeeds(): void
+    {
+        $user = User::factory()->create(['primary_role' => 'care_manager', 'email_verified_at' => now()]);
+        $patient = Patient::query()->create([
+            'url_key' => 'pt-inc-pdf',
+            'slug' => 'pt-inc-pdf',
+            'name' => 'Incident PDF Patient',
+            'reference' => 'AC-20001',
+        ]);
+
+        PatientIncident::query()->create([
+            'patient_id' => $patient->id,
+            'reported_by_user_id' => $user->id,
+            'reference' => 'INC-2026-0099',
+            'incident_title' => 'Slip in bathroom',
+            'incident_date' => now()->toDateString(),
+            'data' => ['incidentTitle' => 'Slip in bathroom'],
+            'submitted_at' => now(),
+        ]);
+
+        $this->actingAs($user)
+            ->get(route('reports.incidents.export.pdf'))
+            ->assertOk()
+            ->assertHeader('content-type', 'application/pdf');
+    }
+
+    public function test_patient_care_notes_pdf_export_succeeds(): void
+    {
+        $user = User::factory()->create(['primary_role' => 'care_worker', 'email_verified_at' => now()]);
+        $patient = Patient::query()->create([
+            'url_key' => 'pt-notes-pdf',
+            'slug' => 'pt-notes-pdf',
+            'name' => 'Notes PDF Patient',
+            'reference' => 'AC-20002',
+        ]);
+
+        CareJournalEntry::query()->create([
+            'patient_id' => $patient->id,
+            'author_user_id' => $user->id,
+            'body' => 'Patient was comfortable and engaged during the visit.',
+            'recorded_at' => now(),
+        ]);
+
+        $this->actingAs($user)
+            ->get(route('patients.notes.export.pdf', $patient->url_key))
+            ->assertOk()
+            ->assertHeader('content-type', 'application/pdf');
+    }
+
+    public function test_patient_observations_pdf_export_succeeds(): void
+    {
+        $user = User::factory()->create(['primary_role' => 'care_worker', 'email_verified_at' => now()]);
+        $patient = Patient::query()->create([
+            'url_key' => 'pt-obs-pdf',
+            'slug' => 'pt-obs-pdf',
+            'name' => 'Observations PDF Patient',
+            'reference' => 'AC-20003',
+        ]);
+
+        PatientVital::query()->create([
+            'patient_id' => $patient->id,
+            'recorded_by_user_id' => $user->id,
+            'heart_rate' => 72,
+            'bp_systolic' => 120,
+            'spo2' => 98,
+            'recorded_at' => now(),
+        ]);
+
+        $this->actingAs($user)
+            ->get(route('patients.observations.export.pdf', $patient->url_key))
+            ->assertOk()
+            ->assertHeader('content-type', 'application/pdf');
+    }
+
+    public function test_clinical_outcomes_pdf_export_succeeds(): void
+    {
+        $user = User::factory()->create(['primary_role' => 'care_manager', 'email_verified_at' => now()]);
+
+        $this->actingAs($user)
+            ->get(route('reports.clinical-outcomes.export.pdf'))
+            ->assertOk()
+            ->assertHeader('content-type', 'application/pdf');
+    }
+
+    public function test_staff_performance_pdf_export_succeeds(): void
+    {
+        $user = User::factory()->create(['primary_role' => 'care_manager', 'email_verified_at' => now()]);
+
+        $this->actingAs($user)
+            ->get(route('reports.staff-performance.export.pdf'))
+            ->assertOk()
+            ->assertHeader('content-type', 'application/pdf');
+    }
+}

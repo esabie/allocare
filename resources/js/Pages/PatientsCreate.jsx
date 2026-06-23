@@ -16,7 +16,7 @@ function localDateInputMax() {
 
 const maxDateOfBirth = localDateInputMax();
 
-export default function PatientsCreate() {
+export default function PatientsCreate({ careGroups = [], completionDueHours = 72 }) {
     const fileInputRef = useRef(null);
     const [nhsInputError, setNhsInputError] = useState('');
     const [photoPreview, setPhotoPreview] = useState('');
@@ -24,7 +24,14 @@ export default function PatientsCreate() {
     const [photoError, setPhotoError] = useState('');
     const [queueMessage, setQueueMessage] = useState('');
     const [submitting, setSubmitting] = useState(false);
-    const { data, setData, errors } = useForm({
+    const [serverErrors, setServerErrors] = useState({});
+    const [postcodeInput, setPostcodeInput] = useState('');
+    const [postcodeLoading, setPostcodeLoading] = useState(false);
+    const [postcodeError, setPostcodeError] = useState('');
+    const [addressOptions, setAddressOptions] = useState([]);
+    const [addressSelected, setAddressSelected] = useState(false);
+    const [manualEntryNeeded, setManualEntryNeeded] = useState(false);
+    const { data, setData, errors: inertiaErrors } = useForm({
         title: 'Mr.',
         first_name: '',
         last_name: '',
@@ -35,6 +42,7 @@ export default function PatientsCreate() {
         severe_allergies: '',
         rag_status: 'green',
         staffing_ratio: '1:1 Support',
+        care_group: '',
         address_line_1: '',
         city: '',
         postcode: '',
@@ -73,6 +81,7 @@ export default function PatientsCreate() {
         phone: '',
         status: 'GREEN',
     });
+    const errors = { ...inertiaErrors, ...serverErrors };
     const formErrorMessages = Object.values(errors || {});
 
     const ragToStatus = {
@@ -84,15 +93,69 @@ export default function PatientsCreate() {
     const submit = async (event) => {
         event.preventDefault();
         setQueueMessage('');
+        setServerErrors({});
+
+        if (!data.first_name?.trim() || !data.last_name?.trim()) {
+            setServerErrors({
+                first_name: !data.first_name?.trim() ? 'First name is required.' : undefined,
+                last_name: !data.last_name?.trim() ? 'Last name is required.' : undefined,
+            });
+            return;
+        }
+
+        if (!data.date_of_birth) {
+            setServerErrors({ date_of_birth: 'Date of birth is required.' });
+            return;
+        }
+
+        if (!data.care_group) {
+            setServerErrors({ care_group: 'Care group / service type is required.' });
+            return;
+        }
+
+        if (!data.start_date) {
+            setServerErrors({ start_date: 'Service start date is required.' });
+            return;
+        }
+
+        if (!data.next_of_kin?.trim() || !data.next_of_kin_tel?.trim()) {
+            setServerErrors({
+                next_of_kin: !data.next_of_kin?.trim() ? 'Emergency contact name is required.' : undefined,
+                next_of_kin_tel: !data.next_of_kin_tel?.trim() ? 'Emergency contact phone number is required.' : undefined,
+            });
+            return;
+        }
+
+        if (nhsInputError) {
+            return;
+        }
+
+        const nhsDigits = String(data.nhs_number || '').replace(/\D/g, '');
+        if (nhsDigits.length > 0 && nhsDigits.length !== 10) {
+            setNhsInputError('NHS number must be exactly 10 digits when provided.');
+            return;
+        }
+
+        if (!data.address_line_1?.trim() || !data.city?.trim() || !data.postcode?.trim()) {
+            setPostcodeError('Please find your postcode and select or enter your full street address.');
+            setServerErrors({
+                address_line_1: 'Address line 1 is required.',
+                city: 'City is required.',
+                postcode: 'Postcode is required.',
+            });
+            return;
+        }
+
         setSubmitting(true);
 
         const fullName = `${data.first_name} ${data.last_name}`.trim();
+        const legalName = `${data.title} ${fullName}`.trim();
         const mergedAddress = [data.address_line_1, data.city, data.postcode].filter(Boolean).join(', ');
 
         const payload = {
             ...data,
-            nhs_number: String(data.nhs_number || '').replace(/\D/g, ''),
-            name: fullName,
+            nhs_number: nhsDigits.length === 10 ? nhsDigits : '',
+            name: legalName,
             dob: data.date_of_birth,
             allergies: data.severe_allergies?.trim() || null,
             primary_diagnosis: data.primary_diagnosis?.trim() || null,
@@ -114,6 +177,15 @@ export default function PatientsCreate() {
                 },
                 onQueued: () => {
                     setQueueMessage('Registration saved offline — will sync when connection returns.');
+                },
+                onError: (errorPayload) => {
+                    if (errorPayload?.errors && typeof errorPayload.errors === 'object') {
+                        const mapped = {};
+                        Object.entries(errorPayload.errors).forEach(([key, value]) => {
+                            mapped[key] = Array.isArray(value) ? value[0] : value;
+                        });
+                        setServerErrors(mapped);
+                    }
                 },
             },
         });
@@ -187,13 +259,6 @@ export default function PatientsCreate() {
         setPhotoError('');
     };
 
-    const [postcodeInput, setPostcodeInput] = useState('');
-    const [postcodeLoading, setPostcodeLoading] = useState(false);
-    const [postcodeError, setPostcodeError] = useState('');
-    const [addressOptions, setAddressOptions] = useState([]);
-    const [addressSelected, setAddressSelected] = useState(false);
-    const [manualEntryNeeded, setManualEntryNeeded] = useState(false);
-
     const lookupPostcode = useCallback(async () => {
         const cleaned = postcodeInput.trim().replace(/\s+/g, '');
         if (!cleaned) {
@@ -216,7 +281,30 @@ export default function PatientsCreate() {
             if (json.manual_entry_needed) {
                 setManualEntryNeeded(true);
             }
-            setAddressOptions(json.addresses || []);
+            const addresses = json.addresses || [];
+            setAddressOptions(addresses);
+            if (addresses.length === 1) {
+                const addr = addresses[0];
+                setPostcodeError('');
+                setServerErrors((current) => {
+                    const next = { ...current };
+                    delete next.address_line_1;
+                    delete next.city;
+                    delete next.postcode;
+                    delete next.address;
+                    return next;
+                });
+                setData((prev) => ({
+                    ...prev,
+                    address_line_1: addr.address_line_1 || '',
+                    city: addr.city || '',
+                    postcode: addr.postcode || postcodeInput.trim(),
+                    latitude: addr.latitude || '',
+                    longitude: addr.longitude || '',
+                }));
+                setAddressSelected(true);
+                setManualEntryNeeded(!addr.address_line_1);
+            }
         } catch {
             setPostcodeError('Network error. Please try again.');
         } finally {
@@ -225,6 +313,15 @@ export default function PatientsCreate() {
     }, [postcodeInput]);
 
     const selectAddress = (addr) => {
+        setPostcodeError('');
+        setServerErrors((current) => {
+            const next = { ...current };
+            delete next.address_line_1;
+            delete next.city;
+            delete next.postcode;
+            delete next.address;
+            return next;
+        });
         setData((prev) => ({
             ...prev,
             address_line_1: addr.address_line_1 || '',
@@ -235,6 +332,7 @@ export default function PatientsCreate() {
         }));
         if (addr.address_line_1) {
             setAddressSelected(true);
+            setManualEntryNeeded(false);
         } else {
             setManualEntryNeeded(true);
             setAddressSelected(true);
@@ -272,6 +370,9 @@ export default function PatientsCreate() {
                             <header className="mb-5 flex items-center justify-between">
                                 <div>
                                     <h1 className="text-4xl font-bold tracking-tight text-slate-900">Register New Client</h1>
+                                    <p className="mt-2 max-w-3xl text-sm text-slate-600">
+                                        Emergency admissions only need the mandatory fields below. Optional details can be added now or within {completionDueHours} hours.
+                                    </p>
                                 </div>
                             </header>
 
@@ -337,8 +438,8 @@ export default function PatientsCreate() {
                                         </select>
                                     </div>
                                     <div>
-                                        <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">NHS Number</label>
-                                        <input required value={data.nhs_number} onChange={(e) => handleNhsNumberChange(e.target.value)} className="mt-1 w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm" placeholder="XXX XXX XXXX" />
+                                        <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">NHS Number <span className="font-normal normal-case text-slate-400">(optional)</span></label>
+                                        <input value={data.nhs_number} onChange={(e) => handleNhsNumberChange(e.target.value)} className="mt-1 w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm" placeholder="XXX XXX XXXX" />
                                         {nhsInputError && <p className="mt-1 text-xs text-rose-600">{nhsInputError}</p>}
                                         {errors.nhs_number && <p className="mt-1 text-xs text-rose-600">{errors.nhs_number}</p>}
                                     </div>
@@ -355,8 +456,8 @@ export default function PatientsCreate() {
                                         <input required type="date" max={maxDateOfBirth} value={data.date_of_birth} onChange={(e) => setData('date_of_birth', e.target.value)} className="mt-1 w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm" />
                                     </div>
                                     <div>
-                                        <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">Gender</label>
-                                        <select required value={data.gender} onChange={(e) => setData('gender', e.target.value)} className="mt-1 w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm">
+                                        <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">Gender <span className="font-normal normal-case text-slate-400">(optional)</span></label>
+                                        <select value={data.gender} onChange={(e) => setData('gender', e.target.value)} className="mt-1 w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm">
                                             <option value="">Select Gender</option><option>Female</option><option>Male</option><option>Non-binary</option>
                                         </select>
                                     </div>
@@ -380,8 +481,8 @@ export default function PatientsCreate() {
                                     </div>
                                     <div className="grid grid-cols-2 gap-3">
                                         <div>
-                                            <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">RAG Status</label>
-                                            <select required value={data.rag_status} onChange={(e) => setData('rag_status', e.target.value)} className="mt-1 w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm">
+                                            <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">RAG Status <span className="font-normal normal-case text-slate-400">(defaults to Green)</span></label>
+                                            <select value={data.rag_status} onChange={(e) => setData('rag_status', e.target.value)} className="mt-1 w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm">
                                                 <option value="green">Green</option>
                                                 <option value="amber">Amber</option>
                                                 <option value="red">Red</option>
@@ -389,8 +490,8 @@ export default function PatientsCreate() {
                                             {errors.rag_status && <p className="mt-1 text-xs text-rose-600">{errors.rag_status}</p>}
                                         </div>
                                         <div>
-                                            <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">Staffing Ratio</label>
-                                            <select required value={data.staffing_ratio} onChange={(e) => setData('staffing_ratio', e.target.value)} className="mt-1 w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm">
+                                            <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">Staffing Ratio <span className="font-normal normal-case text-slate-400">(optional)</span></label>
+                                            <select value={data.staffing_ratio} onChange={(e) => setData('staffing_ratio', e.target.value)} className="mt-1 w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm">
                                                 <option value="1:1 Support">1:1 Support</option>
                                                 <option value="2:1 Support">2:1 Support</option>
                                                 <option value="Shared">Shared</option>
@@ -403,7 +504,7 @@ export default function PatientsCreate() {
 
                             <article className="rounded-2xl border border-slate-200 bg-white p-5">
                                 <h2 className="text-2xl font-semibold text-slate-900">GP & Legal Profile</h2>
-                                <p className="text-sm text-slate-500">Optional clinical and legal details for the overview dashboard</p>
+                                <p className="text-sm text-slate-500">Optional. Add when known; not required for emergency admission</p>
                                 <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-2">
                                     <div>
                                         <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">Preferred name</label>
@@ -489,6 +590,7 @@ export default function PatientsCreate() {
                                     {addressOptions.length > 0 && !addressSelected && (
                                         <div>
                                             <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">Select Address</label>
+                                            <p className="mt-1 text-xs text-slate-500">Click your address below to confirm it for registration.</p>
                                             <div className="mt-1 max-h-48 overflow-y-auto rounded-lg border border-slate-200 bg-white">
                                                 {addressOptions.map((addr, idx) => (
                                                     <button
@@ -553,8 +655,9 @@ export default function PatientsCreate() {
                                             <input value={data.phone_number} onChange={(e) => setData('phone_number', e.target.value)} placeholder="07XXXXXXXXX" className="mt-1 w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm" />
                                         </div>
                                         <div>
-                                            <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">Email Address</label>
-                                            <input required type="email" value={data.email_address} onChange={(e) => setData('email_address', e.target.value)} placeholder="name@example.co.uk" className="mt-1 w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm" />
+                                            <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">Email Address <span className="font-normal normal-case text-slate-400">(optional)</span></label>
+                                            <input type="email" value={data.email_address} onChange={(e) => setData('email_address', e.target.value)} placeholder="name@example.co.uk" className="mt-1 w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm" />
+                                            {errors.email_address && <p className="mt-1 text-xs text-rose-600">{errors.email_address}</p>}
                                         </div>
                                     </div>
                                 </div>
@@ -567,13 +670,13 @@ export default function PatientsCreate() {
                                 <p className="text-sm text-slate-500">Primary emergency and social care details</p>
                                 <div className="mt-4 space-y-3">
                                     <div>
-                                        <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">Next of Kin</label>
+                                        <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">Next of Kin (emergency contact)</label>
                                         <input required value={data.next_of_kin} onChange={(e) => setData('next_of_kin', e.target.value)} className="mt-1 w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm" />
                                         {errors.next_of_kin && <p className="mt-1 text-xs text-rose-600">{errors.next_of_kin}</p>}
                                     </div>
                                     <div>
-                                        <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">Next of Kin tel (Optional)</label>
-                                        <input value={data.next_of_kin_tel} onChange={(e) => setData('next_of_kin_tel', e.target.value)} placeholder="07XXXXXXXXX" className="mt-1 w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm" />
+                                        <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">Emergency contact phone</label>
+                                        <input required value={data.next_of_kin_tel} onChange={(e) => setData('next_of_kin_tel', e.target.value)} placeholder="Phone number" className="mt-1 w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm" />
                                         {errors.next_of_kin_tel && <p className="mt-1 text-xs text-rose-600">{errors.next_of_kin_tel}</p>}
                                     </div>
                                     <div>
@@ -593,22 +696,30 @@ export default function PatientsCreate() {
                                     </div>
                                     <div>
                                         <label className="text-xs font-semibold uppercase tracking-wide text-slate-500 inline-flex items-center gap-2">
-                                            Weight (kg)
-                                            <span className="inline-flex h-4 w-4 items-center justify-center rounded-full bg-slate-500 text-[10px] font-bold text-white">i</span>
+                                            Weight (kg) <span className="font-normal normal-case text-slate-400">(optional)</span>
                                         </label>
-                                        <input required value={data.weight_kg} onChange={(e) => setData('weight_kg', e.target.value)} className="mt-1 w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm" />
+                                        <input value={data.weight_kg} onChange={(e) => setData('weight_kg', e.target.value)} className="mt-1 w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm" />
                                         {errors.weight_kg && <p className="mt-1 text-xs text-rose-600">{errors.weight_kg}</p>}
                                     </div>
                                     <div>
                                         <label className="text-xs font-semibold uppercase tracking-wide text-slate-500 inline-flex items-center gap-2">
-                                            Height (m)
-                                            <span className="inline-flex h-4 w-4 items-center justify-center rounded-full bg-slate-500 text-[10px] font-bold text-white">i</span>
+                                            Height (m) <span className="font-normal normal-case text-slate-400">(optional)</span>
                                         </label>
-                                        <input required value={data.height_m} onChange={(e) => setData('height_m', e.target.value)} className="mt-1 w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm" />
+                                        <input value={data.height_m} onChange={(e) => setData('height_m', e.target.value)} className="mt-1 w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm" />
                                         {errors.height_m && <p className="mt-1 text-xs text-rose-600">{errors.height_m}</p>}
                                     </div>
                                     <div>
-                                        <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">Start date</label>
+                                        <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">Care group / service type</label>
+                                        <select required value={data.care_group} onChange={(e) => setData('care_group', e.target.value)} className="mt-1 w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm">
+                                            <option value="">Select care group</option>
+                                            {careGroups.map((group) => (
+                                                <option key={group.value} value={group.value}>{group.label}</option>
+                                            ))}
+                                        </select>
+                                        {errors.care_group && <p className="mt-1 text-xs text-rose-600">{errors.care_group}</p>}
+                                    </div>
+                                    <div>
+                                        <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">Service start date</label>
                                         <input required type="date" value={data.start_date} onChange={(e) => setData('start_date', e.target.value)} className="mt-1 w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm" />
                                         {errors.start_date && <p className="mt-1 text-xs text-rose-600">{errors.start_date}</p>}
                                     </div>

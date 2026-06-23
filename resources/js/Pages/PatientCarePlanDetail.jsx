@@ -6,6 +6,8 @@ import ProfileMenu from '@/Components/ProfileMenu';
 import { printCarePlan } from '@/utils/carePlanPrint';
 import { postWithOfflineQueue } from '@/utils/offlineQueue';
 
+const REVIEW_DATE_GUIDANCE = 'Required. CQC guidance: review at least every 12 months, or sooner if there is a significant change in need.';
+
 const sideTabs = [
     { label: 'Overview', key: 'overview' },
     { label: 'Care Plans', key: 'care_plans' },
@@ -26,11 +28,15 @@ function formatPlanName(slug) {
         .join(' ');
 }
 
-function canEditCarePlan(user) {
+function canEditCarePlan(user, serverAllowed = null) {
+    if (serverAllowed !== null && serverAllowed !== undefined) {
+        return Boolean(serverAllowed);
+    }
+
     if (!user) return false;
 
     const normalize = (value) => String(value || '').trim().toLowerCase().replace(/\s+/g, '_');
-    const allowedRoles = new Set(['super_admin', 'admin']);
+    const allowedRoles = new Set(['super_admin', 'admin', 'care_manager']);
 
     const candidates = [
         user.primary_role,
@@ -47,13 +53,26 @@ function canEditCarePlan(user) {
     });
 }
 
-export default function PatientCarePlanDetail({ patientSlug = 'sarah-jenkins', planSlug = 'mobility-and-moving', patient = null }) {
+export default function PatientCarePlanDetail({
+    patientSlug = 'sarah-jenkins',
+    planSlug = 'mobility-and-moving',
+    patient = null,
+    moduleMeta = {},
+    canEditCarePlan: canEditCarePlanFromServer = null,
+    canExportCarePlan = false,
+    auditMeta = {},
+    versions = [],
+    reviewPolicy = {},
+}) {
     const { auth, initialSnapshot = {} } = usePage().props;
     const successMessage = usePage().props?.flash?.success;
-    const [validationMessage, setValidationMessage] = useState('');
+    const [formFeedback, setFormFeedback] = useState(null);
+    const [isSaving, setIsSaving] = useState(false);
     const [isOnline, setIsOnline] = useState(typeof navigator !== 'undefined' ? navigator.onLine : true);
+    const [expandedVersionId, setExpandedVersionId] = useState(null);
+    const [restoringVersionId, setRestoringVersionId] = useState(null);
     const formContainerRef = useRef(null);
-    const planName = formatPlanName(planSlug);
+    const planName = moduleMeta?.title || formatPlanName(planSlug);
     const isEndOfLifeCarePlan = planSlug === 'end-of-life-support' || planSlug === 'advance-care-planning';
     const isPainCarePlan = planSlug === 'pain-management';
     const isBowelCarePlan = planSlug === 'bowel-and-stoma-care' || planSlug === 'bowel-care';
@@ -74,7 +93,10 @@ export default function PatientCarePlanDetail({ patientSlug = 'sarah-jenkins', p
     const isNutritionCarePlan = planSlug === 'nutrition-and-hydration';
     const isMobilityCarePlan = planSlug === 'mobility-and-moving';
     const isPersonalCarePlan = planSlug === 'personal-care-and-dignity';
-    const isEditable = canEditCarePlan(auth?.user);
+    const isBespokeCarePlan = Boolean(moduleMeta?.isBespoke) || planSlug.startsWith('bespoke-');
+    const isSafeguardingCarePlan = planSlug === 'safeguarding';
+    const isMentalCapacityCarePlan = planSlug === 'mental-capacity';
+    const isEditable = canEditCarePlan(auth?.user, canEditCarePlanFromServer);
     const readOnlyClasses = !isEditable ? 'cursor-not-allowed opacity-70' : '';
     const now = new Date();
     const signOffDate = new Intl.DateTimeFormat('en-GB', {
@@ -128,7 +150,25 @@ export default function PatientCarePlanDetail({ patientSlug = 'sarah-jenkins', p
         });
     }, [initialSnapshot]);
 
-    const persistSnapshot = () => {
+    useEffect(() => {
+        if (!formContainerRef.current || !isEditable) {
+            return;
+        }
+
+        const fieldName = reviewPolicy?.fieldName || (isPersonalCarePlan ? 'review_date' : 'review_due');
+        const field = formContainerRef.current.querySelector(`[name="${fieldName}"]`);
+        if (field && !field.value && reviewPolicy?.defaultDueDate) {
+            field.value = reviewPolicy.defaultDueDate;
+        }
+    }, [initialSnapshot, isEditable, isPersonalCarePlan, reviewPolicy]);
+
+    useEffect(() => {
+        if (successMessage || formFeedback?.tone === 'success') {
+            window.scrollTo({ top: 0, behavior: 'smooth' });
+        }
+    }, [successMessage, formFeedback]);
+
+    const persistSnapshot = async () => {
         if (!formContainerRef.current || !isEditable) return;
         const data = {};
         const elements = formContainerRef.current.querySelectorAll('input, textarea, select');
@@ -174,21 +214,47 @@ export default function PatientCarePlanDetail({ patientSlug = 'sarah-jenkins', p
         });
 
         if (invalidCount > 0) {
-            setValidationMessage(`All fields are mandatory. Please complete ${invalidCount} missing field${invalidCount === 1 ? '' : 's'} before submitting.`);
+            setFormFeedback({
+                tone: 'error',
+                message: `All fields are mandatory. Please complete ${invalidCount} missing field${invalidCount === 1 ? '' : 's'} before submitting.`,
+            });
             firstInvalidElement?.scrollIntoView({ behavior: 'smooth', block: 'center' });
             firstInvalidElement?.focus?.();
             return;
         }
 
-        setValidationMessage('');
-        postWithOfflineQueue(
+        setFormFeedback(null);
+        setIsSaving(true);
+        await postWithOfflineQueue(
             route('patients.careplans.save', { patient: patientSlug, plan: planSlug }),
             { data },
             {
-                onQueued: () => setValidationMessage('Saved offline — care plan will sync when connection returns.'),
-                onSuccess: () => setValidationMessage('Care plan saved successfully.'),
+                onQueued: () => {
+                    setFormFeedback({
+                        tone: 'info',
+                        message: 'Saved offline — care plan will sync when connection returns.',
+                    });
+                },
+                onSuccess: () => {
+                    setFormFeedback({
+                        tone: 'success',
+                        message: 'Care plan saved successfully.',
+                    });
+                    router.reload({
+                        only: ['initialSnapshot', 'auditMeta', 'versions', 'patient'],
+                        preserveScroll: false,
+                        preserveState: true,
+                    });
+                },
+                onError: () => {
+                    setFormFeedback({
+                        tone: 'error',
+                        message: 'Unable to save care plan. Please try again.',
+                    });
+                },
             },
         );
+        setIsSaving(false);
     };
 
     useEffect(() => {
@@ -210,6 +276,23 @@ export default function PatientCarePlanDetail({ patientSlug = 'sarah-jenkins', p
             container: formContainerRef.current,
         });
     };
+
+    const restoreVersion = (versionId) => {
+        if (!isEditable || restoringVersionId) {
+            return;
+        }
+
+        setRestoringVersionId(versionId);
+        router.post(route('patients.careplans.versions.restore', {
+            patient: patientSlug,
+            plan: planSlug,
+            version: versionId,
+        }), {}, {
+            onFinish: () => setRestoringVersionId(null),
+        });
+    };
+
+    const versionList = Array.isArray(versions) ? versions : [];
 
     return (
         <>
@@ -336,25 +419,72 @@ export default function PatientCarePlanDetail({ patientSlug = 'sarah-jenkins', p
                         </div>
 
                         <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
-                            <div className="mb-4 flex items-center justify-between">
+                            <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
                                 <h1 className="text-3xl font-bold text-slate-900">{planName}</h1>
-                                <span className="rounded-full bg-emerald-100 px-3 py-1 text-xs font-semibold uppercase tracking-wide text-emerald-700">
-                                    Active
-                                </span>
+                                <div className="flex flex-wrap items-center gap-2">
+                                    {canExportCarePlan && (
+                                        <a
+                                            href={route('patients.careplans.section.export.pdf', {
+                                                patient: patientSlug,
+                                                plan: planSlug,
+                                            })}
+                                            className="rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-xs font-semibold uppercase tracking-wide text-emerald-800 hover:bg-emerald-100"
+                                        >
+                                            Export PDF
+                                        </a>
+                                    )}
+                                    <span className="rounded-full bg-emerald-100 px-3 py-1 text-xs font-semibold uppercase tracking-wide text-emerald-700">
+                                        Active
+                                    </span>
+                                </div>
                             </div>
                             {!isEditable && (
                                 <div className="mb-5 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-medium text-amber-700">
-                                    This form is view-only for your role. Only Admin and Super Admin can edit this care plan.
+                                    This care plan is read-only for your role. Only care managers and authorised senior staff can make changes.
                                 </div>
                             )}
-                            {successMessage && (
-                                <div className="mb-5 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-medium text-emerald-700">
-                                    {successMessage}
+                            {(auditMeta.lastUpdatedAtLabel || auditMeta.reviewDueAtLabel) && (
+                                <div className="mb-5 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700">
+                                    {auditMeta.lastUpdatedAtLabel && (
+                                        <p>
+                                            <span className="font-semibold">Last updated:</span> {auditMeta.lastUpdatedAtLabel}
+                                            {auditMeta.lastUpdatedBy && (
+                                                <span className="text-slate-500"> by {auditMeta.lastUpdatedBy}</span>
+                                            )}
+                                        </p>
+                                    )}
+                                    {auditMeta.reviewDueAtLabel && (
+                                        <p className={`mt-1 ${
+                                            auditMeta.reviewOverdue
+                                                ? 'font-semibold text-rose-700'
+                                                : auditMeta.reviewDueSoon
+                                                    ? 'font-semibold text-amber-700'
+                                                    : ''
+                                        }`}>
+                                            <span className="font-semibold">Review due:</span> {auditMeta.reviewDueAtLabel}
+                                            {auditMeta.reviewOverdue && ' (overdue)'}
+                                            {!auditMeta.reviewOverdue && auditMeta.reviewDueSoon && ' (due soon)'}
+                                        </p>
+                                    )}
+                                    {auditMeta.versionCount > 0 && (
+                                        <p className="mt-1 text-xs text-slate-500">
+                                            {auditMeta.versionCount} archived version{auditMeta.versionCount === 1 ? '' : 's'} retained for audit
+                                        </p>
+                                    )}
                                 </div>
                             )}
-                            {validationMessage && (
-                                <div className="mb-5 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-medium text-rose-700">
-                                    {validationMessage}
+                            {(successMessage || formFeedback) && (
+                                <div
+                                    role="status"
+                                    className={`mb-5 rounded-xl border px-4 py-3 text-sm font-medium ${
+                                        (formFeedback?.tone === 'error')
+                                            ? 'border-rose-200 bg-rose-50 text-rose-700'
+                                            : (formFeedback?.tone === 'info')
+                                                ? 'border-amber-200 bg-amber-50 text-amber-900'
+                                                : 'border-emerald-200 bg-emerald-50 text-emerald-800'
+                                    }`}
+                                >
+                                    {formFeedback?.message || successMessage}
                                 </div>
                             )}
 
@@ -572,13 +702,16 @@ export default function PatientCarePlanDetail({ patientSlug = 'sarah-jenkins', p
                                             </div>
                                             <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
                                                 <div>
-                                                    <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-500">Review Due</label>
+                                                    <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-500">Review Due *</label>
                                                     <input
                                                         type="date"
                                                         name="review_due"
+                                                        required={isEditable}
+                                                        max={reviewPolicy?.maxDueDate || undefined}
                                                         disabled={!isEditable}
                                                         className={`w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700 ${readOnlyClasses}`}
                                                     />
+                                                    <p className="mt-1 text-xs text-slate-500">{reviewPolicy?.guidance || REVIEW_DATE_GUIDANCE}</p>
                                                 </div>
                                                 <div>
                                                     <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-500">Owner</label>
@@ -638,15 +771,15 @@ export default function PatientCarePlanDetail({ patientSlug = 'sarah-jenkins', p
                                             <button
                                                 type="button"
                                                 onClick={persistSnapshot}
-                                                disabled={!isEditable}
-                                                className={`rounded-xl bg-slate-900 px-5 py-2.5 text-sm font-semibold text-white hover:bg-slate-800 ${readOnlyClasses}`}
+                                                disabled={!isEditable || isSaving}
+                                                className={`rounded-xl bg-slate-900 px-5 py-2.5 text-sm font-semibold text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60 ${readOnlyClasses}`}
                                             >
-                                                Save & Finalize Record
+                                                {isSaving ? 'Saving…' : 'Save & Finalize Record'}
                                             </button>
                                         </div>
                                     </div>
                                 </div>
-                            ) : isMedicationCarePlan || isSeizureCarePlan || isRespiratoryCarePlan || isEnteralFeedingCarePlan || isDiabetesCarePlan || isBehaviourCarePlan || isContinenceCarePlan || isWoundCarePlan || isSleepCarePlan || isCommunityAccessCarePlan || isCommunicationCarePlan || isMentalHealthCarePlan || isInfectionCarePlan || isBowelCarePlan || isPainCarePlan || isEndOfLifeCarePlan ? (
+                            ) : isMedicationCarePlan || isSeizureCarePlan || isRespiratoryCarePlan || isEnteralFeedingCarePlan || isDiabetesCarePlan || isBehaviourCarePlan || isContinenceCarePlan || isWoundCarePlan || isSleepCarePlan || isCommunityAccessCarePlan || isCommunicationCarePlan || isMentalHealthCarePlan || isInfectionCarePlan || isBowelCarePlan || isPainCarePlan || isEndOfLifeCarePlan || isBespokeCarePlan || isSafeguardingCarePlan || isMentalCapacityCarePlan ? (
                                 <div className="space-y-6">
                                     <div className="grid grid-cols-1 gap-4 rounded-xl bg-slate-50 p-4 lg:grid-cols-5">
                                         <div>
@@ -680,7 +813,13 @@ export default function PatientCarePlanDetail({ patientSlug = 'sarah-jenkins', p
 
                                     <div className="rounded-2xl border border-slate-200 p-5">
                                         <h2 className="mb-4 text-xl font-semibold text-slate-900">
-                                            {isEndOfLifeCarePlan
+                                            {isBespokeCarePlan
+                                                ? planName
+                                                : isSafeguardingCarePlan
+                                                ? 'Safeguarding'
+                                                : isMentalCapacityCarePlan
+                                                ? 'Mental Capacity & Best Interests'
+                                                : isEndOfLifeCarePlan
                                                 ? 'End-of-Life / Advance Care Planning'
                                                 : isPainCarePlan
                                                 ? 'Pain Management'
@@ -713,7 +852,31 @@ export default function PatientCarePlanDetail({ patientSlug = 'sarah-jenkins', p
                                                     : 'Medication & Treatment (Including PRN & Rescue)'}
                                         </h2>
                                         <div className="space-y-4">
-                                            {(isEndOfLifeCarePlan
+                                            {(isBespokeCarePlan
+                                                ? [
+                                                    'Key requirements and person-centred outcomes',
+                                                    'Baseline presentation and current support needs',
+                                                    'Proactive daily support approach',
+                                                    'Early warning signs and reactive steps',
+                                                    'Review triggers and escalation pathway',
+                                                ]
+                                                : isSafeguardingCarePlan
+                                                ? [
+                                                    'Known safeguarding concerns or history',
+                                                    'Current risks and protective factors',
+                                                    'Multi-agency contacts and referral routes',
+                                                    'Staff actions and recording requirements',
+                                                    'Escalation thresholds and review schedule',
+                                                ]
+                                                : isMentalCapacityCarePlan
+                                                ? [
+                                                    'Capacity status for relevant decisions',
+                                                    'Best interest decision-making process',
+                                                    'DOLS/LPS or deprivation of liberty status',
+                                                    'Consultation with family/advocates',
+                                                    'Review dates and responsible lead',
+                                                ]
+                                                : isEndOfLifeCarePlan
                                                 ? [
                                                     'Advance statement / preferences (place of care, rituals)',
                                                     'DNACPR/Respect form status and location',
@@ -854,6 +1017,25 @@ export default function PatientCarePlanDetail({ patientSlug = 'sarah-jenkins', p
                                                 </div>
                                             ))}
                                         </div>
+                                        {isRespiratoryCarePlan && (
+                                            <div className="mt-4 rounded-xl border border-sky-200 bg-sky-50 p-4">
+                                                <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-sky-800">
+                                                    NEWS2 oxygen saturation scale
+                                                </label>
+                                                <select
+                                                    name="news2_oxygen_scale"
+                                                    disabled={!isEditable}
+                                                    className={`w-full rounded-lg border border-sky-200 bg-white px-3 py-2 text-sm text-slate-700 ${readOnlyClasses}`}
+                                                    defaultValue="1"
+                                                >
+                                                    <option value="1">Scale 1 — standard (SpO₂ 94–95% and above)</option>
+                                                    <option value="2">Scale 2 — hypercapnic respiratory failure / COPD (target range 88–92%)</option>
+                                                </select>
+                                                <p className="mt-2 text-xs text-sky-900">
+                                                    Applied automatically when recording physical observations for this service user.
+                                                </p>
+                                            </div>
+                                        )}
                                     </div>
 
                                     <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
@@ -1078,13 +1260,16 @@ export default function PatientCarePlanDetail({ patientSlug = 'sarah-jenkins', p
                                             </div>
                                             <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
                                                 <div>
-                                                    <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-500">Review Due</label>
+                                                    <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-500">Review Due *</label>
                                                     <input
                                                         type="date"
                                                         name="review_due"
+                                                        required={isEditable}
+                                                        max={reviewPolicy?.maxDueDate || undefined}
                                                         disabled={!isEditable}
                                                         className={`w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700 ${readOnlyClasses}`}
                                                     />
+                                                    <p className="mt-1 text-xs text-slate-500">{reviewPolicy?.guidance || REVIEW_DATE_GUIDANCE}</p>
                                                 </div>
                                                 <div>
                                                     <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-500">Owner</label>
@@ -1144,10 +1329,10 @@ export default function PatientCarePlanDetail({ patientSlug = 'sarah-jenkins', p
                                             <button
                                                 type="button"
                                                 onClick={persistSnapshot}
-                                                disabled={!isEditable}
-                                                className={`rounded-xl bg-slate-900 px-5 py-2.5 text-sm font-semibold text-white hover:bg-slate-800 ${readOnlyClasses}`}
+                                                disabled={!isEditable || isSaving}
+                                                className={`rounded-xl bg-slate-900 px-5 py-2.5 text-sm font-semibold text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60 ${readOnlyClasses}`}
                                             >
-                                                Save & Finalize Record
+                                                {isSaving ? 'Saving…' : 'Save & Finalize Record'}
                                             </button>
                                         </div>
                                     </div>
@@ -1367,13 +1552,16 @@ export default function PatientCarePlanDetail({ patientSlug = 'sarah-jenkins', p
                                             </div>
                                             <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
                                                 <div>
-                                                    <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-500">Review Due</label>
+                                                    <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-500">Review Due *</label>
                                                     <input
                                                         type="date"
                                                         name="review_due"
+                                                        required={isEditable}
+                                                        max={reviewPolicy?.maxDueDate || undefined}
                                                         disabled={!isEditable}
                                                         className={`w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700 ${readOnlyClasses}`}
                                                     />
+                                                    <p className="mt-1 text-xs text-slate-500">{reviewPolicy?.guidance || REVIEW_DATE_GUIDANCE}</p>
                                                 </div>
                                                 <div>
                                                     <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-500">Owner</label>
@@ -1433,10 +1621,10 @@ export default function PatientCarePlanDetail({ patientSlug = 'sarah-jenkins', p
                                             <button
                                                 type="button"
                                                 onClick={persistSnapshot}
-                                                disabled={!isEditable}
-                                                className={`rounded-xl bg-slate-900 px-5 py-2.5 text-sm font-semibold text-white hover:bg-slate-800 ${readOnlyClasses}`}
+                                                disabled={!isEditable || isSaving}
+                                                className={`rounded-xl bg-slate-900 px-5 py-2.5 text-sm font-semibold text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60 ${readOnlyClasses}`}
                                             >
-                                                Save & Finalize Record
+                                                {isSaving ? 'Saving…' : 'Save & Finalize Record'}
                                             </button>
                                         </div>
                                     </div>
@@ -1655,13 +1843,16 @@ export default function PatientCarePlanDetail({ patientSlug = 'sarah-jenkins', p
                                             </div>
                                             <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
                                                 <div>
-                                                    <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-500">Review Due</label>
+                                                    <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-500">Review Due *</label>
                                                     <input
                                                         type="date"
                                                         name="review_due"
+                                                        required={isEditable}
+                                                        max={reviewPolicy?.maxDueDate || undefined}
                                                         disabled={!isEditable}
                                                         className={`w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700 ${readOnlyClasses}`}
                                                     />
+                                                    <p className="mt-1 text-xs text-slate-500">{reviewPolicy?.guidance || REVIEW_DATE_GUIDANCE}</p>
                                                 </div>
                                                 <div>
                                                     <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-500">Owner</label>
@@ -1721,10 +1912,10 @@ export default function PatientCarePlanDetail({ patientSlug = 'sarah-jenkins', p
                                             <button
                                                 type="button"
                                                 onClick={persistSnapshot}
-                                                disabled={!isEditable}
-                                                className={`rounded-xl bg-slate-900 px-5 py-2.5 text-sm font-semibold text-white hover:bg-slate-800 ${readOnlyClasses}`}
+                                                disabled={!isEditable || isSaving}
+                                                className={`rounded-xl bg-slate-900 px-5 py-2.5 text-sm font-semibold text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60 ${readOnlyClasses}`}
                                             >
-                                                Save & Finalize Record
+                                                {isSaving ? 'Saving…' : 'Save & Finalize Record'}
                                             </button>
                                         </div>
                                     </div>
@@ -1766,7 +1957,7 @@ export default function PatientCarePlanDetail({ patientSlug = 'sarah-jenkins', p
                                         <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
                                             <div>
                                                 <label className="mb-2 block text-xs font-semibold uppercase tracking-wide text-slate-500">
-                                                    Cultural or Religious Preferences
+                                                    Cultural or Religious Preferences <span className="font-normal normal-case text-slate-400">(optional)</span>
                                                 </label>
                                                 <textarea
                                                     name="cultural_or_religious_preferences"
@@ -1895,13 +2086,16 @@ export default function PatientCarePlanDetail({ patientSlug = 'sarah-jenkins', p
                                                     />
                                                 </div>
                                                 <div>
-                                                    <p className="text-[11px] uppercase tracking-wide text-slate-300">Review Date</p>
+                                                    <p className="text-[11px] uppercase tracking-wide text-slate-300">Review Date *</p>
                                                     <input
                                                         type="date"
                                                         name="review_date"
+                                                        required={isEditable}
+                                                        max={reviewPolicy?.maxDueDate || undefined}
                                                         disabled={!isEditable}
                                                         className={`mt-1 w-full rounded-lg border border-slate-700 bg-slate-800 p-2 text-sm text-white ${readOnlyClasses}`}
                                                     />
+                                                    <p className="mt-1 text-[11px] text-slate-400">{reviewPolicy?.guidance || REVIEW_DATE_GUIDANCE}</p>
                                                 </div>
                                                 <div>
                                                     <p className="text-[11px] uppercase tracking-wide text-slate-300">Plan Owner</p>
@@ -2044,10 +2238,10 @@ export default function PatientCarePlanDetail({ patientSlug = 'sarah-jenkins', p
                                             <button
                                                 type="button"
                                                 onClick={persistSnapshot}
-                                                disabled={!isEditable}
-                                                className={`rounded-xl bg-slate-900 px-5 py-2.5 text-sm font-semibold text-white hover:bg-slate-800 ${readOnlyClasses}`}
+                                                disabled={!isEditable || isSaving}
+                                                className={`rounded-xl bg-slate-900 px-5 py-2.5 text-sm font-semibold text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60 ${readOnlyClasses}`}
                                             >
-                                                Save & Finalize Record
+                                                {isSaving ? 'Saving…' : 'Save & Finalize Record'}
                                             </button>
                                         </div>
                                     </div>
@@ -2080,6 +2274,75 @@ export default function PatientCarePlanDetail({ patientSlug = 'sarah-jenkins', p
                                 </>
                             )}
                         </section>
+
+                        {versionList.length > 0 && (
+                            <section className="mt-6 rounded-2xl border border-slate-200 bg-white p-6 shadow-sm" data-print-exclude>
+                                <h2 className="text-lg font-semibold text-slate-900">Version history</h2>
+                                <p className="mt-1 text-sm text-slate-500">
+                                    Permanent audit trail of all saved changes (most recent first). Previous versions are retained and cannot be deleted.
+                                </p>
+                                <ul className="mt-4 divide-y divide-slate-100">
+                                    {versionList.map((version) => {
+                                        const expanded = expandedVersionId === version.id;
+                                        const snapshot = version.snapshot || {};
+
+                                        return (
+                                            <li key={version.id} className="py-3">
+                                                <div className="flex flex-wrap items-start justify-between gap-2">
+                                                    <div>
+                                                        <p className="text-sm font-semibold text-slate-800">
+                                                            Version {version.versionNumber}
+                                                            <span className="font-normal text-slate-500"> · {version.recordedAtLabel}</span>
+                                                        </p>
+                                                        {version.authorName && (
+                                                            <p className="mt-0.5 text-xs text-slate-500">Saved by {version.authorName}</p>
+                                                        )}
+                                                        <p className="mt-1 text-xs text-slate-600">{version.changeSummary}</p>
+                                                        <p className="mt-1 text-xs text-slate-500">
+                                                            {version.status}
+                                                            {version.reviewDueAtLabel && ` · Review due ${version.reviewDueAtLabel}`}
+                                                            {version.reviewOverdue && ' (overdue)'}
+                                                        </p>
+                                                    </div>
+                                                    <div className="flex flex-wrap gap-2">
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => setExpandedVersionId(expanded ? null : version.id)}
+                                                            className="rounded-lg border border-slate-200 px-2 py-1 text-xs font-semibold text-slate-600 hover:bg-slate-50"
+                                                        >
+                                                            {expanded ? 'Hide snapshot' : 'View snapshot'}
+                                                        </button>
+                                                        {isEditable && version.versionNumber !== versionList[0]?.versionNumber && (
+                                                            <button
+                                                                type="button"
+                                                                disabled={restoringVersionId === version.id}
+                                                                onClick={() => restoreVersion(version.id)}
+                                                                className="rounded-lg border border-emerald-200 bg-emerald-50 px-2 py-1 text-xs font-semibold text-emerald-800 hover:bg-emerald-100 disabled:opacity-60"
+                                                            >
+                                                                {restoringVersionId === version.id ? 'Restoring…' : 'Restore'}
+                                                            </button>
+                                                        )}
+                                                    </div>
+                                                </div>
+                                                {expanded && (
+                                                    <div className="mt-3 max-h-64 overflow-y-auto rounded-xl bg-slate-50 p-3 text-xs text-slate-700">
+                                                        {Object.entries(snapshot).slice(0, 12).map(([key, value]) => (
+                                                            <p key={key} className="mt-1">
+                                                                <span className="font-semibold">{key.replace(/_/g, ' ')}:</span>{' '}
+                                                                {typeof value === 'boolean' ? (value ? 'Yes' : 'No') : String(value ?? '—')}
+                                                            </p>
+                                                        ))}
+                                                        {Object.keys(snapshot).length > 12 && (
+                                                            <p className="mt-2 text-slate-500">+ {Object.keys(snapshot).length - 12} more fields</p>
+                                                        )}
+                                                    </div>
+                                                )}
+                                            </li>
+                                        );
+                                    })}
+                                </ul>
+                            </section>
+                        )}
                     </main>
                 </div>
             </div>

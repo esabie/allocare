@@ -29,6 +29,7 @@ class User extends Authenticatable
         'postcode',
         'phone',
         'primary_role',
+        'assigned_care_groups',
         'account_status',
         'photo_path',
         'mfa_enabled',
@@ -44,16 +45,57 @@ class User extends Authenticatable
     protected $hidden = [
         'password',
         'remember_token',
+        'two_factor_secret',
+        'two_factor_recovery_codes',
     ];
 
     protected $casts = [
         'email_verified_at' => 'datetime',
         'last_login_at' => 'datetime',
+        'two_factor_confirmed_at' => 'datetime',
         'password' => 'hashed',
         'mfa_enabled' => 'boolean',
+        'assigned_care_groups' => 'array',
+        'two_factor_secret' => 'encrypted',
+        'two_factor_recovery_codes' => 'encrypted:array',
         'dbs_issue_date' => 'date',
         'dbs_expiry_date' => 'date',
     ];
+
+    public function hasTwoFactorEnabled(): bool
+    {
+        return $this->two_factor_confirmed_at !== null
+            && is_string($this->two_factor_secret)
+            && $this->two_factor_secret !== '';
+    }
+
+    /**
+     * @return array<int, string>
+     */
+    public function assignedCareGroupValues(): array
+    {
+        return is_array($this->assigned_care_groups)
+            ? array_values(array_filter($this->assigned_care_groups))
+            : [];
+    }
+
+    /**
+     * @return array<int, array{value: string, label: string}>
+     */
+    public function assignedCareGroupsForUi(): array
+    {
+        return \App\Support\PatientRegistration::careGroupsForValues($this->assignedCareGroupValues());
+    }
+
+    public function isEligibleForPatientCareGroup(?string $careGroup): bool
+    {
+        $careGroup = trim((string) ($careGroup ?? ''));
+        if ($careGroup === '') {
+            return true;
+        }
+
+        return in_array($careGroup, $this->assignedCareGroupValues(), true);
+    }
 
     public function trainingRecords(): HasMany
     {

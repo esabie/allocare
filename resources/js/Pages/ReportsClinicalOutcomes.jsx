@@ -61,6 +61,12 @@ export default function ReportsClinicalOutcomes({ stats = {}, weeklyVitals = [],
                                 <button type="button" onClick={applyFilters} className="rounded-lg bg-emerald-600 px-4 py-2 text-xs font-semibold text-white hover:bg-emerald-700">
                                     Apply
                                 </button>
+                                <a
+                                    href={route('reports.clinical-outcomes.export.pdf', { from, to })}
+                                    className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+                                >
+                                    Export PDF
+                                </a>
                             </div>
                         </section>
 

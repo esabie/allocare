@@ -1,5 +1,4 @@
 import { useEffect, useRef, useState } from 'react';
-import Checkbox from '@/Components/Checkbox';
 import GuestLayout from '@/Layouts/GuestLayout';
 import InputError from '@/Components/InputError';
 import InputLabel from '@/Components/InputLabel';
@@ -26,7 +25,6 @@ export default function Register() {
         password: '',
         password_confirmation: '',
         photo: null,
-        mfa_enabled: true,
     });
 
     useEffect(() => {
@@ -282,18 +280,9 @@ export default function Register() {
                         />
                         <InputError message={errors.username} className="mt-2" />
                     </div>
-                    <label className="flex items-start gap-3">
-                        <Checkbox
-                            name="mfa_enabled"
-                            checked={data.mfa_enabled}
-                            onChange={(e) => setData('mfa_enabled', e.target.checked)}
-                            className="mt-0.5"
-                        />
-                        <span className="text-sm text-gray-700">
-                            Enable multi-factor authentication for this account (recommended).
-                        </span>
-                    </label>
-                    <InputError message={errors.mfa_enabled} className="mt-2" />
+                    <p className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-gray-700">
+                        Two-factor authentication is required. You will set up an authenticator app after registration.
+                    </p>
                 </div>
 
                 <div className="rounded-lg border border-gray-200 bg-gray-50/80 p-4 space-y-4">

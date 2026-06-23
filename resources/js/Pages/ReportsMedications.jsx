@@ -3,6 +3,7 @@ import { useState } from 'react';
 import AppHeaderNav from '@/Components/AppHeaderNav';
 import DashboardSidebar from '@/Components/DashboardSidebar';
 import ProfileMenu from '@/Components/ProfileMenu';
+import ReportPagination, { paginatorData } from '@/Components/ReportPagination';
 
 function StatCard({ label, value, accent = 'text-slate-900' }) {
     return (
@@ -14,9 +15,16 @@ function StatCard({ label, value, accent = 'text-slate-900' }) {
 }
 
 function statusBadge(status) {
-    if (status === 'given' || status === 'self_administered') return 'bg-emerald-100 text-emerald-700';
+    if (status === 'given' || status === 'self_administered' || status === 'prn_administered') return 'bg-emerald-100 text-emerald-700';
     if (status === 'refused') return 'bg-red-100 text-red-700';
     if (status === 'omitted') return 'bg-amber-100 text-amber-700';
+    return 'bg-slate-100 text-slate-600';
+}
+
+function timelinessBadge(timeliness) {
+    if (timeliness === 'On time') return 'bg-emerald-100 text-emerald-700';
+    if (timeliness === 'Late') return 'bg-red-100 text-red-700';
+    if (timeliness === 'Delayed') return 'bg-orange-100 text-orange-700';
     return 'bg-slate-100 text-slate-600';
 }
 
@@ -26,6 +34,7 @@ export default function ReportsMedications({ stats = {}, refusedReasons = {}, by
     const [showByPatient, setShowByPatient] = useState(false);
     const [selectedPatient, setSelectedPatient] = useState('');
     const exportQuery = { from, to };
+    const administrationRows = paginatorData(administrations);
 
     const applyFilters = () => {
         router.get(route('reports.medications'), { from, to }, { preserveState: true, preserveScroll: true });
@@ -90,15 +99,34 @@ export default function ReportsMedications({ stats = {}, refusedReasons = {}, by
                                 >
                                     Export PDF
                                 </a>
+                                <a
+                                    href={route('reports.medications.exceptions.export.pdf', exportQuery)}
+                                    className="rounded-lg border border-red-200 bg-red-50 px-4 py-2 text-xs font-semibold text-red-800 hover:bg-red-100"
+                                >
+                                    CQC exceptions (PDF)
+                                </a>
+                                <a
+                                    href={route('reports.medications.exceptions.export.csv', exportQuery)}
+                                    className="rounded-lg border border-red-200 bg-white px-4 py-2 text-xs font-semibold text-red-800 hover:bg-red-50"
+                                >
+                                    CQC exceptions (CSV)
+                                </a>
+                                <Link
+                                    href={route('reports.emar-weekly-audit')}
+                                    className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+                                >
+                                    Weekly eMAR audit
+                                </Link>
                             </div>
                         </section>
 
                         {/* Stats */}
-                        <section className="mb-6 grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-7">
+                        <section className="mb-6 grid grid-cols-2 gap-4 sm:grid-cols-4 lg:grid-cols-8">
                             <StatCard label="Total" value={stats.totalAdministrations || 0} />
                             <StatCard label="Given" value={stats.given || 0} accent="text-emerald-700" />
                             <StatCard label="Refused" value={stats.refused || 0} accent="text-red-600" />
                             <StatCard label="Omitted" value={stats.omitted || 0} accent="text-amber-700" />
+                            <StatCard label="Delayed" value={stats.delayed || 0} accent="text-orange-600" />
                             <StatCard label="Self-Admin" value={stats.selfAdministered || 0} accent="text-blue-700" />
                             <StatCard label="Controlled" value={stats.controlled || 0} accent="text-orange-600" />
                             <StatCard label="Compliance" value={`${stats.complianceRate || 0}%`} accent="text-emerald-700" />
@@ -164,27 +192,29 @@ export default function ReportsMedications({ stats = {}, refusedReasons = {}, by
                         <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
                             <h2 className="mb-4 text-lg font-semibold text-slate-900">Recent Administrations</h2>
                             <div className="overflow-x-auto">
-                                <table className="w-full min-w-[900px] border-collapse text-left text-sm">
+                                <table className="w-full min-w-[1100px] border-collapse text-left text-sm">
                                     <thead className="bg-slate-50">
                                         <tr>
                                             <th className="border border-slate-200 px-3 py-2">Patient</th>
                                             <th className="border border-slate-200 px-3 py-2">Medication</th>
                                             <th className="border border-slate-200 px-3 py-2">Status</th>
                                             <th className="border border-slate-200 px-3 py-2">Administered By</th>
-                                            <th className="border border-slate-200 px-3 py-2">When</th>
+                                            <th className="border border-slate-200 px-3 py-2">Scheduled Time</th>
+                                            <th className="border border-slate-200 px-3 py-2">Updated time</th>
+                                            <th className="border border-slate-200 px-3 py-2">Timeliness</th>
                                             <th className="border border-slate-200 px-3 py-2">Reason</th>
                                             <th className="border border-slate-200 px-3 py-2">Witness</th>
                                         </tr>
                                     </thead>
                                     <tbody>
-                                        {administrations.length === 0 ? (
+                                        {administrationRows.length === 0 ? (
                                             <tr>
-                                                <td colSpan={7} className="border border-slate-200 px-3 py-8 text-center text-slate-500">
+                                                <td colSpan={9} className="border border-slate-200 px-3 py-8 text-center text-slate-500">
                                                     No medication administrations recorded in this period.
                                                 </td>
                                             </tr>
                                         ) : (
-                                            administrations.map((admin) => (
+                                            administrationRows.map((admin) => (
                                                 <tr key={admin.id} className="odd:bg-white even:bg-slate-50/30">
                                                     <td className="border border-slate-200 px-3 py-2">{admin.patient}</td>
                                                     <td className="border border-slate-200 px-3 py-2 font-medium">
@@ -198,7 +228,13 @@ export default function ReportsMedications({ stats = {}, refusedReasons = {}, by
                                                         </span>
                                                     </td>
                                                     <td className="border border-slate-200 px-3 py-2">{admin.administered_by}</td>
-                                                    <td className="whitespace-nowrap border border-slate-200 px-3 py-2">{admin.administered_at}</td>
+                                                    <td className="whitespace-nowrap border border-slate-200 px-3 py-2">{admin.scheduled_time}</td>
+                                                    <td className="whitespace-nowrap border border-slate-200 px-3 py-2">{admin.updated_at}</td>
+                                                    <td className="border border-slate-200 px-3 py-2">
+                                                        <span className={`inline-block rounded-full px-2.5 py-1 text-[10px] font-semibold ${timelinessBadge(admin.timeliness)}`}>
+                                                            {admin.timeliness}
+                                                        </span>
+                                                    </td>
                                                     <td className="border border-slate-200 px-3 py-2 text-xs">{admin.reason || '-'}</td>
                                                     <td className="border border-slate-200 px-3 py-2 text-xs">{admin.witness || '-'}</td>
                                                 </tr>
@@ -207,6 +243,7 @@ export default function ReportsMedications({ stats = {}, refusedReasons = {}, by
                                     </tbody>
                                 </table>
                             </div>
+                            <ReportPagination pagination={administrations} />
                         </section>
                     </main>
                 </div>

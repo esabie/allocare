@@ -28,11 +28,24 @@ class PatientHandover extends Model
         'seizure_respiratory_events',
         'morning_priorities',
         'recorded_at',
+        'controlled_drug_reconciliation_complete',
+        'auto_generated',
+        'auto_snapshot',
+        'period_start_at',
+        'period_end_at',
+        'acknowledged_by_user_id',
+        'acknowledged_at',
     ];
 
     protected $casts = [
         'shift_date' => 'date',
         'recorded_at' => 'datetime',
+        'controlled_drug_reconciliation_complete' => 'boolean',
+        'auto_generated' => 'boolean',
+        'auto_snapshot' => 'array',
+        'period_start_at' => 'datetime',
+        'period_end_at' => 'datetime',
+        'acknowledged_at' => 'datetime',
     ];
 
     public function patient(): BelongsTo
@@ -48,5 +61,10 @@ class PatientHandover extends Model
     public function author(): BelongsTo
     {
         return $this->belongsTo(User::class, 'author_user_id');
+    }
+
+    public function acknowledgedBy(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'acknowledged_by_user_id');
     }
 }

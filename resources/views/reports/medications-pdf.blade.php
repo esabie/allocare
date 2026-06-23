@@ -39,7 +39,7 @@
     <table>
         <thead>
             <tr>
-                <th>Patient</th><th>Medication</th><th>Status</th><th>Administered By</th><th>When</th><th>Reason</th>
+                <th>Patient</th><th>Medication</th><th>Status</th><th>Administered By</th><th>Scheduled Time</th><th>Updated time</th><th>Timeliness</th><th>Reason</th>
             </tr>
         </thead>
         <tbody>
@@ -49,11 +49,13 @@
                     <td>{{ $a->medication?->name ?? '-' }}</td>
                     <td>{{ $a->status ?? '-' }}</td>
                     <td>{{ $a->administeredBy?->name ?? '-' }}</td>
-                    <td>{{ $a->administered_at?->format('d M Y H:i') ?? '-' }}</td>
+                    <td>{{ $a->scheduled_for?->format('d M Y H:i') ?? '-' }}</td>
+                    <td>{{ $a->updated_at?->format('d M Y H:i') ?? '-' }}</td>
+                    <td>{{ medication_administration_timeliness($a) }}</td>
                     <td>{{ $a->reason ?? '-' }}</td>
                 </tr>
             @empty
-                <tr><td colspan="6">No medication administrations in selected period.</td></tr>
+                <tr><td colspan="8">No medication administrations in selected period.</td></tr>
             @endforelse
         </tbody>
     </table>

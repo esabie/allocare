@@ -20,18 +20,35 @@ class MedicationStockMovement extends Model
     protected $fillable = [
         'patient_medication_id',
         'recorded_by_user_id',
+        'witness_user_id',
         'movement_type',
         'quantity_delta',
         'balance_after',
+        'expected_balance',
+        'counted_balance',
         'reference',
         'notes',
         'medication_administration_id',
+        'patient_handover_id',
+        'is_permanent_record',
     ];
 
     protected $casts = [
         'quantity_delta' => 'decimal:2',
         'balance_after' => 'decimal:2',
+        'expected_balance' => 'decimal:2',
+        'counted_balance' => 'decimal:2',
+        'is_permanent_record' => 'boolean',
     ];
+
+    protected static function booted(): void
+    {
+        static::deleting(function (MedicationStockMovement $movement) {
+            if ($movement->is_permanent_record) {
+                throw new \RuntimeException('Controlled drug destruction records cannot be deleted.');
+            }
+        });
+    }
 
     public function medication(): BelongsTo
     {
@@ -41,5 +58,15 @@ class MedicationStockMovement extends Model
     public function recordedBy(): BelongsTo
     {
         return $this->belongsTo(User::class, 'recorded_by_user_id');
+    }
+
+    public function witness(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'witness_user_id');
+    }
+
+    public function handover(): BelongsTo
+    {
+        return $this->belongsTo(PatientHandover::class, 'patient_handover_id');
     }
 }

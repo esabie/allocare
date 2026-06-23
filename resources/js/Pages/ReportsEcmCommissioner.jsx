@@ -3,6 +3,7 @@ import { useState } from 'react';
 import AppHeaderNav from '@/Components/AppHeaderNav';
 import DashboardSidebar from '@/Components/DashboardSidebar';
 import ProfileMenu from '@/Components/ProfileMenu';
+import ReportPagination, { paginatorData } from '@/Components/ReportPagination';
 
 function StatCard({ label, value, accent = 'text-slate-900' }) {
     return (
@@ -23,6 +24,7 @@ export default function ReportsEcmCommissioner({ rows = [], stats = {}, filters 
     const [from, setFrom] = useState(filters.from || '');
     const [to, setTo] = useState(filters.to || '');
     const exportQuery = { from, to };
+    const evidenceRows = paginatorData(rows);
 
     const applyFilters = () => {
         router.get(route('reports.ecm-commissioner'), { from, to }, { preserveState: true, preserveScroll: true });
@@ -111,14 +113,14 @@ export default function ReportsEcmCommissioner({ rows = [], stats = {}, filters 
                                         </tr>
                                     </thead>
                                     <tbody>
-                                        {rows.length === 0 ? (
+                                        {evidenceRows.length === 0 ? (
                                             <tr>
                                                 <td colSpan={11} className="border border-slate-200 px-3 py-6 text-center text-slate-500">
                                                     No attendance evidence recorded for this period.
                                                 </td>
                                             </tr>
                                         ) : (
-                                            rows.map((row) => (
+                                            evidenceRows.map((row) => (
                                                 <tr key={row.id} className="odd:bg-white even:bg-slate-50/30">
                                                     <td className="border border-slate-200 px-3 py-2">
                                                         <div className="font-medium text-slate-800">{row.scheduledDate}</div>
@@ -149,6 +151,7 @@ export default function ReportsEcmCommissioner({ rows = [], stats = {}, filters 
                                     </tbody>
                                 </table>
                             </div>
+                            <ReportPagination pagination={rows} />
                         </section>
                     </main>
                 </div>

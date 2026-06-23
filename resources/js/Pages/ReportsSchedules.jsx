@@ -3,6 +3,7 @@ import { useState } from 'react';
 import AppHeaderNav from '@/Components/AppHeaderNav';
 import DashboardSidebar from '@/Components/DashboardSidebar';
 import ProfileMenu from '@/Components/ProfileMenu';
+import ReportPagination, { paginatorData } from '@/Components/ReportPagination';
 
 function StatCard({ label, value, accent = 'text-slate-900' }) {
     return (
@@ -28,6 +29,8 @@ export default function ReportsSchedules({ stats = {}, byStaff = [], byPatient =
     const [showByPatient, setShowByPatient] = useState(false);
     const [selectedPatient, setSelectedPatient] = useState('');
     const exportQuery = { from, to };
+    const staffRows = paginatorData(byStaff);
+    const shiftRows = paginatorData(shifts);
 
     const applyFilters = () => {
         router.get(route('reports.schedules'), { from, to }, { preserveState: true, preserveScroll: true });
@@ -122,14 +125,14 @@ export default function ReportsSchedules({ stats = {}, byStaff = [], byPatient =
                                         </tr>
                                     </thead>
                                     <tbody>
-                                        {byStaff.length === 0 ? (
+                                        {staffRows.length === 0 ? (
                                             <tr>
                                                 <td colSpan={3} className="border border-slate-200 px-3 py-6 text-center text-slate-500">
                                                     No shifts in the selected period.
                                                 </td>
                                             </tr>
                                         ) : (
-                                            byStaff.map((staff, idx) => (
+                                            staffRows.map((staff, idx) => (
                                                 <tr key={idx} className="odd:bg-white even:bg-slate-50/30">
                                                     <td className="border border-slate-200 px-3 py-2 font-medium">{staff.name}</td>
                                                     <td className="border border-slate-200 px-3 py-2">{staff.shifts}</td>
@@ -140,6 +143,7 @@ export default function ReportsSchedules({ stats = {}, byStaff = [], byPatient =
                                     </tbody>
                                 </table>
                             </div>
+                            <ReportPagination pagination={byStaff} />
                         </section>
 
                         {/* By Patient */}
@@ -200,14 +204,14 @@ export default function ReportsSchedules({ stats = {}, byStaff = [], byPatient =
                                         </tr>
                                     </thead>
                                     <tbody>
-                                        {shifts.length === 0 ? (
+                                        {shiftRows.length === 0 ? (
                                             <tr>
                                                 <td colSpan={7} className="border border-slate-200 px-3 py-6 text-center text-slate-500">
                                                     No shifts found for the selected period.
                                                 </td>
                                             </tr>
                                         ) : (
-                                            shifts.map((shift) => (
+                                            shiftRows.map((shift) => (
                                                 <tr key={shift.id} className="odd:bg-white even:bg-slate-50/30">
                                                     <td className="whitespace-nowrap border border-slate-200 px-3 py-2">{shift.date}</td>
                                                     <td className="whitespace-nowrap border border-slate-200 px-3 py-2">{shift.time}</td>
@@ -231,6 +235,7 @@ export default function ReportsSchedules({ stats = {}, byStaff = [], byPatient =
                                     </tbody>
                                 </table>
                             </div>
+                            <ReportPagination pagination={shifts} />
                         </section>
                     </main>
                 </div>

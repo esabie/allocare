@@ -13,9 +13,13 @@ class PatientIncident extends Model
         'reported_by_user_id',
         'reference',
         'incident_title',
+        'incident_category',
         'incident_date',
         'incident_time',
         'location',
+        'severity',
+        'category',
+        'sub_category',
         'data',
         'submitted_at',
     ];

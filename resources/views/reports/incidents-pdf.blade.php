@@ -39,12 +39,13 @@
     <table>
         <thead>
             <tr>
-                <th>Title</th><th>Patient</th><th>Reporter</th><th>Date</th><th>Time</th><th>Status</th><th>Submitted</th>
+                <th>Category</th><th>Title</th><th>Patient</th><th>Reporter</th><th>Date</th><th>Time</th><th>Status</th><th>Submitted</th>
             </tr>
         </thead>
         <tbody>
             @forelse(($incidents ?? []) as $incident)
                 <tr>
+                    <td>{{ $incident['category'] ?? '-' }}</td>
                     <td>{{ $incident['title'] ?? '-' }}</td>
                     <td>{{ $incident['patient'] ?? '-' }}</td>
                     <td>{{ $incident['reporter'] ?? '-' }}</td>
@@ -54,7 +55,7 @@
                     <td>{{ $incident['submitted_at'] ?? '-' }}</td>
                 </tr>
             @empty
-                <tr><td colspan="7">No incidents recorded.</td></tr>
+                <tr><td colspan="8">No incidents recorded.</td></tr>
             @endforelse
         </tbody>
     </table>

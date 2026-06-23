@@ -3,6 +3,7 @@ import { useState } from 'react';
 import AppHeaderNav from '@/Components/AppHeaderNav';
 import DashboardSidebar from '@/Components/DashboardSidebar';
 import ProfileMenu from '@/Components/ProfileMenu';
+import ReportPagination, { paginatorData } from '@/Components/ReportPagination';
 
 function StatCard({ label, value, tone = 'slate' }) {
     const toneClasses = {
@@ -63,6 +64,9 @@ export default function ReportsComplianceTraining({
         role: selectedRole,
         risk: selectedRisk,
     };
+
+    const staffRowsData = paginatorData(staffRows);
+    const actionRows = paginatorData(actions);
 
     return (
         <>
@@ -186,14 +190,14 @@ export default function ReportsComplianceTraining({
                                         </tr>
                                     </thead>
                                     <tbody>
-                                        {actions.length === 0 ? (
+                                        {actionRows.length === 0 ? (
                                             <tr>
                                                 <td colSpan={5} className="border border-slate-200 px-3 py-6 text-center text-slate-500">
                                                     No immediate actions in the selected filter scope.
                                                 </td>
                                             </tr>
                                         ) : (
-                                            actions.map((action, index) => (
+                                            actionRows.map((action, index) => (
                                                 <tr key={`${action.user_id}-${index}`} className="odd:bg-white even:bg-slate-50/30">
                                                     <td className="border border-slate-200 px-3 py-2 font-medium text-slate-800">{action.staff_name}</td>
                                                     <td className="border border-slate-200 px-3 py-2">{action.role_label}</td>
@@ -210,6 +214,7 @@ export default function ReportsComplianceTraining({
                                     </tbody>
                                 </table>
                             </div>
+                            <ReportPagination pagination={actions} />
                         </section>
 
                         <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
@@ -229,14 +234,14 @@ export default function ReportsComplianceTraining({
                                         </tr>
                                     </thead>
                                     <tbody>
-                                        {staffRows.length === 0 ? (
+                                        {staffRowsData.length === 0 ? (
                                             <tr>
                                                 <td colSpan={8} className="border border-slate-200 px-3 py-6 text-center text-slate-500">
                                                     No staff data available for this filter combination.
                                                 </td>
                                             </tr>
                                         ) : (
-                                            staffRows.map((row) => (
+                                            staffRowsData.map((row) => (
                                                 <tr key={row.id} className="odd:bg-white even:bg-slate-50/30">
                                                     <td className="border border-slate-200 px-3 py-2 font-medium text-slate-800">{row.staff_name}</td>
                                                     <td className="border border-slate-200 px-3 py-2">{row.role_label}</td>
@@ -256,6 +261,7 @@ export default function ReportsComplianceTraining({
                                     </tbody>
                                 </table>
                             </div>
+                            <ReportPagination pagination={staffRows} />
                         </section>
                     </main>
                 </div>

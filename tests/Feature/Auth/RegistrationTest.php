@@ -3,7 +3,6 @@
 namespace Tests\Feature\Auth;
 
 use App\Models\User;
-use App\Providers\RouteServiceProvider;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
 
@@ -40,11 +39,10 @@ class RegistrationTest extends TestCase
             'username' => 'tuser_reg',
             'password' => 'N0tGuessable!Pass',
             'password_confirmation' => 'N0tGuessable!Pass',
-            'mfa_enabled' => '1',
         ]);
 
-        $this->assertAuthenticated();
-        $response->assertRedirect(RouteServiceProvider::HOME);
+        $this->assertGuest();
+        $response->assertRedirect(route('two-factor.setup'));
 
         $user = User::query()->where('email', 'test@example.com')->first();
         $this->assertNotNull($user);
@@ -53,9 +51,10 @@ class RegistrationTest extends TestCase
         $this->assertSame('tuser_reg', $user->username);
         $this->assertSame('1990-05-15', $user->date_of_birth);
         $this->assertTrue($user->mfa_enabled);
+        $this->assertFalse($user->hasTwoFactorEnabled());
     }
 
-    public function test_registration_forces_mfa_enabled_even_if_checkbox_is_off(): void
+    public function test_registration_always_requires_authenticator_setup(): void
     {
         $this->post('/registeriw54w69w46gw45wggw5w4', [
             'first_name' => 'No',
@@ -64,11 +63,11 @@ class RegistrationTest extends TestCase
             'username' => 'nomfa_user',
             'password' => 'N0tGuessable!Pass',
             'password_confirmation' => 'N0tGuessable!Pass',
-            'mfa_enabled' => '0',
         ]);
 
         $user = User::query()->where('email', 'nomfa@example.com')->first();
         $this->assertNotNull($user);
         $this->assertTrue($user->mfa_enabled);
+        $this->assertFalse($user->hasTwoFactorEnabled());
     }
 }

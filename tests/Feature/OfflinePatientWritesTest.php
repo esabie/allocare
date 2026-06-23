@@ -36,12 +36,13 @@ class OfflinePatientWritesTest extends TestCase
         $patient = $this->createPatient();
 
         $this->actingAs($user)
-            ->postJson(route('journal.store'), [
+            ->postJson(route('care-notes.store'), [
                 'patient_id' => $patient->id,
                 'body' => 'Care note recorded while offline',
                 'filter' => 'all',
             ])
-            ->assertRedirect(route('journal', ['filter' => 'all']));
+            ->assertCreated()
+            ->assertJsonPath('success', true);
 
         $this->assertDatabaseHas('care_journal_entries', [
             'patient_id' => $patient->id,

@@ -221,12 +221,12 @@ export default function Welcome() {
                         <section className="mt-4 grid grid-cols-1 gap-4 xl:grid-cols-3">
                             <article className="rounded-2xl bg-white p-5 xl:col-span-2">
                                 <div className="mb-5 flex items-center justify-between">
-                                    <h2 className="text-2xl font-semibold text-slate-800">Clinical Journal</h2>
+                                    <h2 className="text-2xl font-semibold text-slate-800">Care Notes</h2>
                                     <Link
-                                        href={route('journal')}
+                                        href={route('care-notes')}
                                         className="rounded-lg bg-emerald-50 px-3 py-2 text-sm font-semibold text-emerald-700 hover:bg-emerald-100"
                                     >
-                                        + New Entry
+                                        + New note
                                     </Link>
                                 </div>
                                 {recentJournalEntries.length === 0 ? (
@@ -234,7 +234,7 @@ export default function Welcome() {
                                         <div className="mx-auto mb-4 h-28 w-28 rounded-2xl bg-slate-200" />
                                         <h3 className="mb-2 text-2xl font-semibold text-slate-700">No care notes yet</h3>
                                         <p className="text-sm text-slate-500">
-                                            Record daily care notes in the journal to track patient progress.
+                                            Record daily care notes to support continuity of care, handovers, and inspections.
                                         </p>
                                     </div>
                                 ) : (
@@ -251,8 +251,8 @@ export default function Welcome() {
                                             </li>
                                         ))}
                                         <li>
-                                            <Link href={route('journal')} className="text-sm font-semibold text-emerald-700 hover:text-emerald-800">
-                                                Open full journal →
+                                            <Link href={route('care-notes')} className="text-sm font-semibold text-emerald-700 hover:text-emerald-800">
+                                                Open all care notes →
                                             </Link>
                                         </li>
                                     </ul>

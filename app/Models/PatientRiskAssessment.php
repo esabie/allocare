@@ -8,7 +8,20 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
 
 class PatientRiskAssessment extends Model
 {
-    public const LEVELS = ['low', 'moderate', 'high'];
+    public const LEVELS = ['green', 'amber', 'red'];
+
+    public const LEVEL_LABELS = [
+        'green' => 'Green',
+        'amber' => 'Amber',
+        'red' => 'Red',
+    ];
+
+    /** @var array<string, string> */
+    public const LEGACY_LEVEL_MAP = [
+        'low' => 'green',
+        'moderate' => 'amber',
+        'high' => 'red',
+    ];
 
     public const STATUSES = ['draft', 'active', 'archived'];
 
@@ -17,7 +30,17 @@ class PatientRiskAssessment extends Model
         'risk_slug',
         'risk_level',
         'status',
+        'risk_statement',
         'triggers',
+        'proactive_controls',
+        'active_controls',
+        'reactive_controls',
+        'monitoring_requirements',
+        'escalation_pathway',
+        'capacity_consent_notes',
+        'legal_restrictions',
+        'linked_care_plan_slugs',
+        'linked_incident_ids',
         'current_controls',
         'mitigation_plan',
         'owner_name',
@@ -28,10 +51,34 @@ class PatientRiskAssessment extends Model
         'updated_by_user_id',
     ];
 
+    public static function normalizeLevel(?string $level): ?string
+    {
+        if ($level === null) {
+            return null;
+        }
+
+        $normalized = strtolower(trim($level));
+
+        if (isset(self::LEGACY_LEVEL_MAP[$normalized])) {
+            return self::LEGACY_LEVEL_MAP[$normalized];
+        }
+
+        return in_array($normalized, self::LEVELS, true) ? $normalized : null;
+    }
+
+    public static function levelLabel(?string $level): ?string
+    {
+        $normalized = self::normalizeLevel($level);
+
+        return $normalized ? (self::LEVEL_LABELS[$normalized] ?? null) : null;
+    }
+
     protected $casts = [
         'last_reviewed_at' => 'date',
         'next_review_due_at' => 'date',
         'review_cycle_months' => 'integer',
+        'linked_care_plan_slugs' => 'array',
+        'linked_incident_ids' => 'array',
     ];
 
     public function patient(): BelongsTo

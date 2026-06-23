@@ -25,7 +25,17 @@ function badgeClasses(status) {
     return 'bg-slate-200 text-slate-600';
 }
 
-export default function Patients({ patients: dbPatients = [] }) {
+function lifecycleBadgeClasses(status) {
+    if (status === 'inactive') {
+        return 'bg-amber-100 text-amber-800';
+    }
+    if (status === 'finished') {
+        return 'bg-slate-200 text-slate-700';
+    }
+    return 'bg-emerald-100 text-emerald-800';
+}
+
+export default function Patients({ patients: dbPatients = [], canRegisterPatients = false }) {
     const successMessage = usePage().props?.flash?.success;
     const patientList = dbPatients;
     const [searchTerm, setSearchTerm] = useState('');
@@ -118,12 +128,14 @@ export default function Patients({ patients: dbPatients = [] }) {
                                             className="w-44 rounded-lg border border-slate-200 bg-white py-2 pl-8 pr-3 text-xs text-slate-700 outline-none transition placeholder:text-slate-400 focus:w-56 focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100"
                                         />
                                     </div>
-                                    <Link
-                                        href={route('patients.create')}
-                                        className="rounded-xl bg-slate-900 px-5 py-2.5 text-sm font-semibold text-white shadow-sm"
-                                    >
-                                        + Add Patient
-                                    </Link>
+                                    {canRegisterPatients && (
+                                        <Link
+                                            href={route('patients.create')}
+                                            className="rounded-xl bg-slate-900 px-5 py-2.5 text-sm font-semibold text-white shadow-sm"
+                                        >
+                                            + Add Patient
+                                        </Link>
+                                    )}
                                 </div>
                             </header>
 
@@ -132,12 +144,14 @@ export default function Patients({ patients: dbPatients = [] }) {
                                 <div className="rounded-2xl border border-dashed border-slate-200 bg-white px-8 py-16 text-center">
                                     <p className="text-lg font-semibold text-slate-900">No patients yet</p>
                                     <p className="mt-2 text-sm text-slate-600">Add a patient to see them listed here.</p>
-                                    <Link
-                                        href={route('patients.create')}
-                                        className="mt-6 inline-flex rounded-xl bg-slate-900 px-5 py-3 text-sm font-semibold text-white shadow-sm"
-                                    >
-                                        + Add your first patient
-                                    </Link>
+                                    {canRegisterPatients && (
+                                        <Link
+                                            href={route('patients.create')}
+                                            className="mt-6 inline-flex rounded-xl bg-slate-900 px-5 py-3 text-sm font-semibold text-white shadow-sm"
+                                        >
+                                            + Add your first patient
+                                        </Link>
+                                    )}
                                 </div>
                             ) : (
                             <section className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
@@ -155,10 +169,22 @@ export default function Patients({ patients: dbPatients = [] }) {
                                                 )}
                                                 <div className="space-y-2 text-right">
                                                     <span
-                                                        className={`inline-block rounded-full px-3 py-1 text-[10px] font-semibold tracking-wide ${badgeClasses(patient.status)}`}
+                                                        className={`inline-block rounded-full px-3 py-1 text-[10px] font-semibold tracking-wide ${badgeClasses(patient.ragStatus)}`}
                                                     >
-                                                        {patient.status}
+                                                        {patient.ragStatus}
                                                     </span>
+                                                    {patient.lifecycleStatus && patient.lifecycleStatus !== 'active' && (
+                                                        <span
+                                                            className={`block rounded-full px-3 py-1 text-[10px] font-semibold tracking-wide ${lifecycleBadgeClasses(patient.lifecycleStatus)}`}
+                                                        >
+                                                            {patient.lifecycleStatusLabel}
+                                                        </span>
+                                                    )}
+                                                    {patient.profileIncomplete && (
+                                                        <span className="block rounded-full bg-amber-100 px-3 py-1 text-[10px] font-semibold tracking-wide text-amber-800">
+                                                            Incomplete Profile
+                                                        </span>
+                                                    )}
                                                     <p className="text-[11px] font-semibold text-emerald-700">{patient.date}</p>
                                                 </div>
                                             </div>

@@ -1,4 +1,5 @@
 import { Head, Link } from '@inertiajs/react';
+import { useState } from 'react';
 import ApplicationLogo from '@/Components/ApplicationLogo';
 import AppHeaderNav from '@/Components/AppHeaderNav';
 import ProfileMenu from '@/Components/ProfileMenu';
@@ -25,6 +26,8 @@ function StatCard({ label, value, accent = 'text-slate-900' }) {
 }
 
 export default function PatientMAR({ patientSlug = 'cr-88210', stats = {} }) {
+    const [marMonth, setMarMonth] = useState(new Date().toISOString().slice(0, 7));
+
     const marCards = [
         {
             slug: 'today-mar',
@@ -67,6 +70,7 @@ export default function PatientMAR({ patientSlug = 'cr-88210', stats = {} }) {
             status: 'Open',
             description: 'Compliance checks and review',
             detail: 'Medication compliance audit',
+            href: route('patients.mar.weekly-audit', patientSlug),
         },
     ];
 
@@ -130,12 +134,26 @@ export default function PatientMAR({ patientSlug = 'cr-88210', stats = {} }) {
                                 <span>/</span>
                                 <span className="text-slate-900">eMAR</span>
                             </div>
-                            <a
-                                href={route('patients.mar.monthly-chart.pdf', { patient: patientSlug })}
-                                className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50"
-                            >
-                                Download monthly MAR chart (PDF)
-                            </a>
+                            <div className="flex flex-wrap items-center gap-2">
+                                <input
+                                    type="month"
+                                    value={marMonth}
+                                    onChange={(e) => setMarMonth(e.target.value)}
+                                    className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs text-slate-700"
+                                />
+                                <a
+                                    href={route('patients.mar.monthly-chart.pdf', { patient: patientSlug, month: marMonth })}
+                                    className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+                                >
+                                    Download monthly MAR chart (PDF)
+                                </a>
+                                <Link
+                                    href={route('patients.mar.history', patientSlug)}
+                                    className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+                                >
+                                    Medication history
+                                </Link>
+                            </div>
                         </div>
 
                         {/* Stats overview */}
@@ -155,7 +173,7 @@ export default function PatientMAR({ patientSlug = 'cr-88210', stats = {} }) {
                             {marCards.map((card) => (
                                 <Link
                                     key={card.slug}
-                                    href={route('patients.mar.show', { patient: patientSlug, mar: card.slug })}
+                                    href={card.href || route('patients.mar.show', { patient: patientSlug, mar: card.slug })}
                                     className="block rounded-2xl border border-slate-200 bg-white p-5 shadow-sm transition hover:border-emerald-300 hover:shadow-md"
                                 >
                                     <div className="mb-3 flex items-start justify-between">

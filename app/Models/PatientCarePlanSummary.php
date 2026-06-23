@@ -17,6 +17,8 @@ class PatientCarePlanSummary extends Model
         'status',
         'submitted_at',
         'submitted_by_user_id',
+        'updated_by_user_id',
+        'review_due_at',
         'key_fields',
         'data_excerpt',
     ];
@@ -24,6 +26,7 @@ class PatientCarePlanSummary extends Model
     protected $casts = [
         'schema_version' => 'integer',
         'submitted_at' => 'datetime',
+        'review_due_at' => 'date',
         'key_fields' => 'array',
     ];
 }

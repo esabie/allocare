@@ -25,6 +25,46 @@ function vitalMetric(label, value, unit, accent = 'text-slate-800') {
     );
 }
 
+function news2RiskClasses(riskLevel) {
+    switch (riskLevel) {
+        case 'high':
+            return 'border-red-300 bg-red-50 text-red-900';
+        case 'medium':
+            return 'border-amber-300 bg-amber-50 text-amber-900';
+        case 'low_medium':
+            return 'border-yellow-300 bg-yellow-50 text-yellow-900';
+        default:
+            return 'border-emerald-300 bg-emerald-50 text-emerald-900';
+    }
+}
+
+function News2Summary({ entry }) {
+    if (entry.news2Score === null || entry.news2Score === undefined) {
+        return null;
+    }
+
+    return (
+        <div className={`mb-3 rounded-xl border p-4 ${news2RiskClasses(entry.news2RiskLevel)}`}>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                    <p className="text-[10px] font-bold uppercase tracking-wide opacity-80">NEWS2 score</p>
+                    <p className="text-3xl font-bold">{entry.news2Score}</p>
+                </div>
+                <div className="text-right">
+                    <p className="text-sm font-semibold">{entry.news2RiskLabel}</p>
+                    <p className="text-xs opacity-80">{entry.oxygenSaturationScaleLabel}</p>
+                </div>
+            </div>
+            {entry.news2SingleParameterThree && (
+                <p className="mt-2 text-xs font-semibold">Single parameter scored 3 — escalation trigger</p>
+            )}
+            {entry.news2EscalationGuidance && (
+                <p className="mt-2 text-sm leading-relaxed">{entry.news2EscalationGuidance}</p>
+            )}
+        </div>
+    );
+}
+
 export default function PatientObservations({
     patientSlug,
     patient = null,
@@ -35,6 +75,9 @@ export default function PatientObservations({
     fluidBalanceSummary = [],
     bowelRecords = [],
     bristolOptions = [],
+    news2OxygenScale = 1,
+    news2OxygenScaleLabel = 'Scale 1 (standard)',
+    consciousnessOptions = [],
 }) {
     const successMessage = usePage().props?.flash?.success;
     const patientName = patient?.name || 'Unknown Patient';
@@ -53,11 +96,14 @@ export default function PatientObservations({
     }, []);
 
     const { data, setData, processing, errors, reset } = useForm({
+        respiration_rate: latestVitals?.respirationRate ? String(latestVitals.respirationRate) : '',
         heart_rate: latestVitals?.heartRate ? String(latestVitals.heartRate) : '',
         bp_systolic: latestVitals?.bpSystolic ? String(latestVitals.bpSystolic) : '',
         bp_diastolic: latestVitals?.bpDiastolic ? String(latestVitals.bpDiastolic) : '',
         spo2: latestVitals?.spo2 ? String(latestVitals.spo2) : '',
+        supplemental_oxygen: Boolean(latestVitals?.supplementalOxygen),
         temperature_celsius: latestVitals?.temperatureCelsius ? String(latestVitals.temperatureCelsius) : '',
+        consciousness_level: latestVitals?.consciousnessLevel || 'alert',
         blood_glucose_mmol: latestVitals?.bloodGlucoseMmol ? String(latestVitals.bloodGlucoseMmol) : '',
         weight_kg: latestVitals?.weightKg ? String(latestVitals.weightKg) : '',
         pain_score: latestVitals?.painScore !== null && latestVitals?.painScore !== undefined ? String(latestVitals.painScore) : '',
@@ -100,14 +146,14 @@ export default function PatientObservations({
     };
 
     const tabs = [
-        { key: 'vitals', label: 'Vitals' },
+        { key: 'vitals', label: 'NEWS2 physical obs' },
         { key: 'fluid', label: 'Fluid balance' },
         { key: 'bowel', label: 'Bowel chart' },
     ];
 
     return (
         <>
-            <Head title={`Observations — ${patientName}`} />
+            <Head title={`Physical Observations — ${patientName}`} />
 
             <div className="min-h-screen bg-slate-100 text-slate-700">
                 <div className="flex w-full">
@@ -126,7 +172,7 @@ export default function PatientObservations({
                             <span>/</span>
                             <Link href={route('patients.show', patientSlug)} className="hover:text-slate-700">{patientName}</Link>
                             <span>/</span>
-                            <span className="text-slate-900">Observations</span>
+                            <span className="text-slate-900">Physical Observations</span>
                         </div>
 
                         {successMessage && (
@@ -138,12 +184,17 @@ export default function PatientObservations({
                         {activeTab === 'vitals' && <ObservationTrendCharts chartData={chartData} />}
 
                         <section className="mb-6 rounded-2xl bg-white p-5 shadow-sm">
-                            <h1 className="text-2xl font-bold text-slate-900">Clinical Observations</h1>
+                            <h1 className="text-2xl font-bold text-slate-900">Physical Observations</h1>
                             <p className="mt-1 text-sm text-slate-500">
-                                Record vitals, fluid balance, and bowel chart entries. Out-of-range values trigger alerts on the profile and dashboard.
+                                NHS NEWS2 early warning scoring — respiration, oxygen saturation, blood pressure, pulse, temperature, and ACVPU consciousness. Fluid balance and bowel chart remain available separately.
+                            </p>
+                            <p className="mt-2 text-xs font-medium text-slate-600">
+                                Oxygen saturation scale from care plan: <span className="font-semibold text-slate-800">{news2OxygenScaleLabel}</span>
+                                {news2OxygenScale === 2 && ' — hypercapnic respiratory failure / COPD targets apply.'}
                             </p>
 
-                            <div className="mt-4 inline-flex rounded-lg border border-slate-200 bg-slate-50 p-1">
+                            <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
+                                <div className="inline-flex rounded-lg border border-slate-200 bg-slate-50 p-1">
                                 {tabs.map((tab) => (
                                     <button
                                         key={tab.key}
@@ -158,36 +209,74 @@ export default function PatientObservations({
                                         {tab.label}
                                     </button>
                                 ))}
+                                </div>
+                                <a
+                                    href={route('patients.observations.export.pdf', patientSlug)}
+                                    className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50"
+                                >
+                                    Export PDF
+                                </a>
                             </div>
 
                             {activeTab === 'vitals' && (
                             <form onSubmit={submitObservation} className="mt-6 rounded-2xl border border-slate-200 bg-slate-50 p-5">
-                                <h2 className="mb-4 text-lg font-semibold text-slate-800">New observation</h2>
+                                <h2 className="mb-1 text-lg font-semibold text-slate-800">New NEWS2 observation set</h2>
+                                <p className="mb-4 text-xs text-slate-500">All seven NEWS2 parameters are required. Score and escalation guidance are calculated automatically on save.</p>
                                 <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
                                     <div>
-                                        <InputLabel htmlFor="heart_rate" value="Heart rate (bpm) *" />
-                                        <input id="heart_rate" type="number" min="20" max="260" required value={data.heart_rate} onChange={(e) => setData('heart_rate', e.target.value)} className="mt-1 block w-full rounded-md border-slate-300 shadow-sm focus:border-emerald-500 focus:ring-emerald-500" />
-                                        <InputError message={errors.heart_rate} className="mt-2" />
+                                        <InputLabel htmlFor="respiration_rate" value="Respiration rate (/min) *" />
+                                        <input id="respiration_rate" type="number" min="4" max="60" required value={data.respiration_rate} onChange={(e) => setData('respiration_rate', e.target.value)} className="mt-1 block w-full rounded-md border-slate-300 shadow-sm focus:border-emerald-500 focus:ring-emerald-500" />
+                                        <InputError message={errors.respiration_rate} className="mt-2" />
                                     </div>
                                     <div>
-                                        <InputLabel htmlFor="bp_systolic" value="BP systolic (mmHg) *" />
-                                        <input id="bp_systolic" type="number" min="40" max="300" required value={data.bp_systolic} onChange={(e) => setData('bp_systolic', e.target.value)} className="mt-1 block w-full rounded-md border-slate-300 shadow-sm focus:border-emerald-500 focus:ring-emerald-500" />
-                                        <InputError message={errors.bp_systolic} className="mt-2" />
-                                    </div>
-                                    <div>
-                                        <InputLabel htmlFor="bp_diastolic" value="BP diastolic (mmHg)" />
-                                        <input id="bp_diastolic" type="number" min="40" max="200" value={data.bp_diastolic} onChange={(e) => setData('bp_diastolic', e.target.value)} className="mt-1 block w-full rounded-md border-slate-300 shadow-sm focus:border-emerald-500 focus:ring-emerald-500" />
-                                        <InputError message={errors.bp_diastolic} className="mt-2" />
-                                    </div>
-                                    <div>
-                                        <InputLabel htmlFor="spo2" value="SpO₂ (%) *" />
+                                        <InputLabel htmlFor="spo2" value="Oxygen saturation (%) *" />
                                         <input id="spo2" type="number" min="50" max="100" required value={data.spo2} onChange={(e) => setData('spo2', e.target.value)} className="mt-1 block w-full rounded-md border-slate-300 shadow-sm focus:border-emerald-500 focus:ring-emerald-500" />
                                         <InputError message={errors.spo2} className="mt-2" />
                                     </div>
                                     <div>
-                                        <InputLabel htmlFor="temperature_celsius" value="Temperature (°C)" />
-                                        <input id="temperature_celsius" type="number" min="30" max="45" step="0.1" value={data.temperature_celsius} onChange={(e) => setData('temperature_celsius', e.target.value)} className="mt-1 block w-full rounded-md border-slate-300 shadow-sm focus:border-emerald-500 focus:ring-emerald-500" />
+                                        <InputLabel htmlFor="heart_rate" value="Pulse (bpm) *" />
+                                        <input id="heart_rate" type="number" min="20" max="260" required value={data.heart_rate} onChange={(e) => setData('heart_rate', e.target.value)} className="mt-1 block w-full rounded-md border-slate-300 shadow-sm focus:border-emerald-500 focus:ring-emerald-500" />
+                                        <InputError message={errors.heart_rate} className="mt-2" />
+                                    </div>
+                                    <div>
+                                        <InputLabel htmlFor="bp_systolic" value="Systolic BP (mmHg) *" />
+                                        <input id="bp_systolic" type="number" min="40" max="300" required value={data.bp_systolic} onChange={(e) => setData('bp_systolic', e.target.value)} className="mt-1 block w-full rounded-md border-slate-300 shadow-sm focus:border-emerald-500 focus:ring-emerald-500" />
+                                        <InputError message={errors.bp_systolic} className="mt-2" />
+                                    </div>
+                                    <div>
+                                        <InputLabel htmlFor="temperature_celsius" value="Temperature (°C) *" />
+                                        <input id="temperature_celsius" type="number" min="30" max="45" step="0.1" required value={data.temperature_celsius} onChange={(e) => setData('temperature_celsius', e.target.value)} className="mt-1 block w-full rounded-md border-slate-300 shadow-sm focus:border-emerald-500 focus:ring-emerald-500" />
                                         <InputError message={errors.temperature_celsius} className="mt-2" />
+                                    </div>
+                                    <div>
+                                        <InputLabel htmlFor="consciousness_level" value="Consciousness (ACVPU) *" />
+                                        <select id="consciousness_level" required value={data.consciousness_level} onChange={(e) => setData('consciousness_level', e.target.value)} className="mt-1 block w-full rounded-md border-slate-300 shadow-sm focus:border-emerald-500 focus:ring-emerald-500">
+                                            {consciousnessOptions.map((option) => (
+                                                <option key={option.value} value={option.value}>{option.label}</option>
+                                            ))}
+                                        </select>
+                                        <InputError message={errors.consciousness_level} className="mt-2" />
+                                    </div>
+                                    <div className="flex items-end">
+                                        <label className="flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700">
+                                            <input
+                                                type="checkbox"
+                                                checked={data.supplemental_oxygen}
+                                                onChange={(e) => setData('supplemental_oxygen', e.target.checked)}
+                                                className="rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
+                                            />
+                                            On supplemental oxygen
+                                        </label>
+                                    </div>
+                                </div>
+
+                                <div className="mt-6 border-t border-slate-200 pt-4">
+                                    <h3 className="mb-3 text-sm font-semibold text-slate-700">Additional observations (optional)</h3>
+                                    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+                                    <div>
+                                        <InputLabel htmlFor="bp_diastolic" value="BP diastolic (mmHg)" />
+                                        <input id="bp_diastolic" type="number" min="40" max="200" value={data.bp_diastolic} onChange={(e) => setData('bp_diastolic', e.target.value)} className="mt-1 block w-full rounded-md border-slate-300 shadow-sm focus:border-emerald-500 focus:ring-emerald-500" />
+                                        <InputError message={errors.bp_diastolic} className="mt-2" />
                                     </div>
                                     <div>
                                         <InputLabel htmlFor="blood_glucose_mmol" value="Blood glucose (mmol/L)" />
@@ -204,14 +293,15 @@ export default function PatientObservations({
                                         <input id="pain_score" type="number" min="0" max="10" value={data.pain_score} onChange={(e) => setData('pain_score', e.target.value)} className="mt-1 block w-full rounded-md border-slate-300 shadow-sm focus:border-emerald-500 focus:ring-emerald-500" />
                                         <InputError message={errors.pain_score} className="mt-2" />
                                     </div>
+                                    </div>
                                 </div>
                                 <div className="mt-4">
-                                    <InputLabel htmlFor="other_observation" value="Other observations" />
-                                    <textarea id="other_observation" value={data.other_observation} onChange={(e) => setData('other_observation', e.target.value)} rows={4} className="mt-1 block w-full rounded-md border-slate-300 shadow-sm focus:border-emerald-500 focus:ring-emerald-500" placeholder="Additional clinical notes..." />
+                                    <InputLabel htmlFor="other_observation" value="Clinical notes" />
+                                    <textarea id="other_observation" value={data.other_observation} onChange={(e) => setData('other_observation', e.target.value)} rows={4} className="mt-1 block w-full rounded-md border-slate-300 shadow-sm focus:border-emerald-500 focus:ring-emerald-500" placeholder="Linked care context, actions taken, clinician contacted..." />
                                     <InputError message={errors.other_observation} className="mt-2" />
                                 </div>
                                 <div className="mt-4 flex justify-end">
-                                    <PrimaryButton disabled={processing}>{processing ? 'Saving...' : 'Save observation'}</PrimaryButton>
+                                    <PrimaryButton disabled={processing}>{processing ? 'Saving...' : 'Save NEWS2 observation'}</PrimaryButton>
                                 </div>
                             </form>
                             )}
@@ -304,7 +394,7 @@ export default function PatientObservations({
 
                         {activeTab === 'vitals' && (
                         <section className="rounded-2xl bg-white p-5 shadow-sm">
-                            <h2 className="mb-4 text-lg font-semibold text-slate-800">Vitals history</h2>
+                            <h2 className="mb-4 text-lg font-semibold text-slate-800">NEWS2 observation history</h2>
                             {observations.length === 0 ? (
                                 <p className="rounded-xl bg-slate-50 p-8 text-center text-sm text-slate-500">No observations recorded yet.</p>
                             ) : (
@@ -317,6 +407,7 @@ export default function PatientObservations({
                                                 </p>
                                                 <time dateTime={entry.recordedAt} className="text-xs font-medium text-slate-500">{entry.recordedAtLabel}</time>
                                             </div>
+                                            <News2Summary entry={entry} />
                                             {entry.thresholdAlerts?.length > 0 && (
                                                 <div className="mb-3 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
                                                     {entry.thresholdAlerts.map((alert) => (
@@ -325,11 +416,16 @@ export default function PatientObservations({
                                                 </div>
                                             )}
                                             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
-                                                {vitalMetric('Heart rate', entry.heartRate, 'bpm')}
+                                                {vitalMetric('Respiration', entry.respirationRate, '/min')}
+                                                {vitalMetric('Pulse', entry.heartRate, 'bpm')}
                                                 {vitalMetric('BP systolic', entry.bpSystolic, 'mmHg', 'text-rose-600')}
                                                 {vitalMetric('BP diastolic', entry.bpDiastolic, 'mmHg')}
                                                 {vitalMetric('SpO₂', entry.spo2, '%', 'text-emerald-600')}
                                                 {vitalMetric('Temperature', entry.temperatureCelsius, '°C')}
+                                                {vitalMetric('Consciousness', entry.consciousnessLabel)}
+                                                {entry.supplementalOxygen && (
+                                                    <div className="rounded-lg bg-sky-50 p-3 text-sm font-medium text-sky-800">Supplemental oxygen</div>
+                                                )}
                                                 {vitalMetric('Glucose', entry.bloodGlucoseMmol, 'mmol/L')}
                                                 {vitalMetric('Weight', entry.weightKg, 'kg')}
                                                 {vitalMetric('Pain', entry.painScore, '/10', 'text-orange-600')}

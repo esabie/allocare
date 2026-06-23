@@ -7,11 +7,11 @@ const tabs = [
     { key: 'care_plans', label: 'Care Plans', route: 'patients.careplans' },
     { key: 'risk_assessment', label: 'Risk Assessment', route: 'patients.risks' },
     { key: 'medication', label: 'eMAR', route: 'patients.mar' },
-    { key: 'observations', label: 'Observations', route: 'patients.observations' },
+    { key: 'observations', label: 'Physical Observations', route: 'patients.observations' },
     { key: 'handovers', label: 'Handovers', route: 'patients.handovers' },
     { key: 'wound_care', label: 'Wound care', route: 'patients.wound-care' },
     { key: 'documents', label: 'Documents', route: 'patients.documents' },
-    { key: 'notes', label: 'Notes' },
+    { key: 'notes', label: 'Notes', route: 'patients.notes' },
     { key: 'logs', label: 'Logs', route: 'patients.logs' },
     { key: 'contacts', label: 'Contacts', route: 'patients.contacts' },
 ];

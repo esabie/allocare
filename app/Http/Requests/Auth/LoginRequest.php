@@ -59,14 +59,11 @@ class LoginRequest extends FormRequest
             ]);
         }
 
-        if (! (bool) (Auth::user()?->mfa_enabled)) {
-            Auth::logout();
-            RateLimiter::hit($this->throttleKey());
+        $user = Auth::user();
+        Auth::logout();
 
-            throw ValidationException::withMessages([
-                'email' => 'Two-factor authentication is mandatory for all accounts.',
-            ]);
-        }
+        $this->session()->put('login.id', $user->id);
+        $this->session()->put('login.remember', $this->boolean('remember'));
 
         RateLimiter::clear($this->throttleKey());
     }
