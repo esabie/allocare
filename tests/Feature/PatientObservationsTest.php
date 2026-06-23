@@ -79,9 +79,13 @@ class PatientObservationsTest extends TestCase
         $this->actingAs($user)
             ->from(route('patients.observations', $patient->url_key))
             ->post(route('patients.vitals.store', $patient->url_key), [
+                'respiration_rate' => 16,
                 'heart_rate' => 72,
                 'bp_systolic' => 120,
                 'spo2' => 98,
+                'supplemental_oxygen' => false,
+                'temperature_celsius' => 36.8,
+                'consciousness_level' => 'alert',
                 'other_observation' => 'Patient alert and mobilising with frame.',
             ])
             ->assertRedirect(route('patients.observations', $patient->url_key));
@@ -107,11 +111,14 @@ class PatientObservationsTest extends TestCase
 
         $this->actingAs($user)
             ->post(route('patients.vitals.store', $patient->url_key), [
+                'respiration_rate' => 18,
                 'heart_rate' => 88,
                 'bp_systolic' => 118,
                 'bp_diastolic' => 76,
                 'spo2' => 96,
+                'supplemental_oxygen' => false,
                 'temperature_celsius' => 38.6,
+                'consciousness_level' => 'alert',
                 'blood_glucose_mmol' => 12.5,
                 'weight_kg' => 72.4,
                 'pain_score' => 8,

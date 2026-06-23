@@ -8,6 +8,9 @@ use App\Http\Controllers\Auth\NewPasswordController;
 use App\Http\Controllers\Auth\PasswordController;
 use App\Http\Controllers\Auth\PasswordResetLinkController;
 use App\Http\Controllers\Auth\RegisteredUserController;
+use App\Http\Controllers\Auth\TwoFactorChallengeController;
+use App\Http\Controllers\Auth\TwoFactorRecoveryCodesController;
+use App\Http\Controllers\Auth\TwoFactorSetupController;
 use App\Http\Controllers\Auth\VerifyEmailController;
 use Illuminate\Support\Facades\Route;
 
@@ -39,7 +42,24 @@ Route::middleware('guest')->group(function () {
                 ->name('password.store');
 });
 
+Route::get('two-factor-challenge', [TwoFactorChallengeController::class, 'create'])
+    ->name('two-factor.login');
+
+Route::post('two-factor-challenge', [TwoFactorChallengeController::class, 'store'])
+    ->name('two-factor.login.store');
+
+Route::get('two-factor-setup', [TwoFactorSetupController::class, 'create'])
+    ->name('two-factor.setup');
+
+Route::post('two-factor-setup', [TwoFactorSetupController::class, 'store'])
+    ->name('two-factor.setup.store');
+
 Route::middleware('auth')->group(function () {
+    Route::get('two-factor-recovery-codes', [TwoFactorRecoveryCodesController::class, 'show'])
+        ->name('two-factor.recovery-codes');
+
+    Route::post('two-factor-recovery-codes', [TwoFactorRecoveryCodesController::class, 'store'])
+        ->name('two-factor.recovery-codes.store');
     Route::get('verify-email', EmailVerificationPromptController::class)
                 ->name('verification.notice');
 

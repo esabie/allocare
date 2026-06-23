@@ -3,6 +3,7 @@ import { useState } from 'react';
 import AppHeaderNav from '@/Components/AppHeaderNav';
 import DashboardSidebar from '@/Components/DashboardSidebar';
 import ProfileMenu from '@/Components/ProfileMenu';
+import ReportPagination, { paginatorData } from '@/Components/ReportPagination';
 
 function StatCard({ label, value, accent = 'text-slate-900' }) {
     return (
@@ -32,6 +33,7 @@ export default function ReportsIncidents({ incidents = [], stats = {} }) {
     } = stats;
     const [showByPatient, setShowByPatient] = useState(false);
     const [selectedPatient, setSelectedPatient] = useState('');
+    const incidentRows = paginatorData(incidents);
 
     return (
         <>
@@ -159,6 +161,7 @@ export default function ReportsIncidents({ incidents = [], stats = {} }) {
                                     <thead className="bg-slate-50">
                                         <tr>
                                             <th className="border border-slate-200 px-3 py-2">Ref</th>
+                                            <th className="border border-slate-200 px-3 py-2">Category</th>
                                             <th className="border border-slate-200 px-3 py-2">Title</th>
                                             <th className="border border-slate-200 px-3 py-2">Date</th>
                                             <th className="border border-slate-200 px-3 py-2">Patient</th>
@@ -169,18 +172,19 @@ export default function ReportsIncidents({ incidents = [], stats = {} }) {
                                         </tr>
                                     </thead>
                                     <tbody>
-                                        {incidents.length === 0 ? (
+                                        {incidentRows.length === 0 ? (
                                             <tr>
-                                                <td colSpan={8} className="border border-slate-200 px-3 py-8 text-center text-slate-500">
+                                                <td colSpan={9} className="border border-slate-200 px-3 py-8 text-center text-slate-500">
                                                     No incidents have been reported yet.
                                                 </td>
                                             </tr>
                                         ) : (
-                                            incidents.map((incident) => {
+                                            incidentRows.map((incident) => {
                                                 const inv = incident.investigation || {};
                                                 return (
                                                 <tr key={incident.id} className="odd:bg-white even:bg-slate-50/30">
                                                     <td className="border border-slate-200 px-3 py-2 text-xs font-mono">{incident.reference}</td>
+                                                    <td className="border border-slate-200 px-3 py-2 text-xs">{incident.categoryLabel || '—'}</td>
                                                     <td className="border border-slate-200 px-3 py-2 font-medium max-w-[180px] truncate">{incident.title}</td>
                                                     <td className="whitespace-nowrap border border-slate-200 px-3 py-2 text-xs">{incident.incident_date}</td>
                                                     <td className="border border-slate-200 px-3 py-2">{incident.patient_name}</td>
@@ -217,6 +221,7 @@ export default function ReportsIncidents({ incidents = [], stats = {} }) {
                                     </tbody>
                                 </table>
                             </div>
+                            <ReportPagination pagination={incidents} />
                         </section>
                     </main>
                 </div>

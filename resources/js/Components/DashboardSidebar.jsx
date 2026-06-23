@@ -5,14 +5,16 @@ import ApplicationLogo from '@/Components/ApplicationLogo';
 export default function DashboardSidebar({ active = 'overview', subtitle = 'Clinical Precision' }) {
     const authUser = usePage().props?.auth?.user;
     const canViewActivityLog = Boolean(authUser?.canViewActivityLog);
+    const canViewAnalytics = Boolean(authUser?.canViewAnalytics);
+    const canViewStaffDirectory = Boolean(authUser?.canViewStaffDirectory);
     const [mobileOpen, setMobileOpen] = useState(false);
 
     const items = [
         { key: 'overview', label: 'Overview', href: route('dashboard') },
-        { key: 'journal', label: 'Journal', href: route('journal') },
+        { key: 'care-notes', label: 'Care Notes', href: route('care-notes') },
         { key: 'care_alerts', label: 'Care Alerts', href: route('care-alerts') },
-        { key: 'analytics', label: 'Analytics', href: route('analytics') },
-        { key: 'employees', label: 'Employees', href: route('employees') },
+        ...(canViewAnalytics ? [{ key: 'analytics', label: 'Analytics', href: route('analytics') }] : []),
+        ...(canViewStaffDirectory ? [{ key: 'employees', label: 'Employees', href: route('employees') }] : []),
         ...(canViewActivityLog ? [{ key: 'activity_logs', label: 'Activity Logs', href: route('admin.activity-logs') }] : []),
     ];
 

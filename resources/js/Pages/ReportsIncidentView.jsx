@@ -35,8 +35,11 @@ export default function ReportsIncidentView({
     const form = useForm({
         investigation_status: inv.status || 'pending',
         investigation_summary: inv.investigationSummary || '',
+        investigation_outcome: inv.investigationOutcome || '',
         root_cause: inv.rootCause || '',
         corrective_actions: inv.correctiveActions || '',
+        corrective_action_owner: inv.correctiveActionOwner || '',
+        recurrence_prevention: inv.recurrencePrevention || '',
         due_at: inv.dueAt || '',
         riddor_reportable: inv.riddorReportable || false,
         riddor_category: inv.riddorCategory || '',
@@ -89,6 +92,12 @@ export default function ReportsIncidentView({
                                     </h1>
                                     <p className="mt-1 text-sm text-slate-500">
                                         Patient: <span className="font-medium text-slate-700">{incident.patient_name}</span>
+                                        {incident.categoryLabel && (
+                                            <>
+                                                {' '}
+                                                · <span className="font-medium text-slate-700">{incident.categoryLabel}</span>
+                                            </>
+                                        )}
                                     </p>
                                 </div>
                                 <Link href={route('reports.incidents')} className="rounded-lg bg-slate-100 px-3 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-200">
@@ -128,6 +137,10 @@ export default function ReportsIncidentView({
                                             <InputLabel value="Investigation summary" />
                                             <textarea rows={3} value={form.data.investigation_summary} onChange={(e) => form.setData('investigation_summary', e.target.value)} className="mt-1 block w-full rounded-md border-slate-300 text-sm" />
                                         </div>
+                                        <div className="md:col-span-2">
+                                            <InputLabel value="Investigation outcome" />
+                                            <textarea rows={3} value={form.data.investigation_outcome} onChange={(e) => form.setData('investigation_outcome', e.target.value)} className="mt-1 block w-full rounded-md border-slate-300 text-sm" />
+                                        </div>
                                         <div>
                                             <InputLabel value="Root cause" />
                                             <textarea rows={3} value={form.data.root_cause} onChange={(e) => form.setData('root_cause', e.target.value)} className="mt-1 block w-full rounded-md border-slate-300 text-sm" />
@@ -135,6 +148,14 @@ export default function ReportsIncidentView({
                                         <div>
                                             <InputLabel value="Corrective actions" />
                                             <textarea rows={3} value={form.data.corrective_actions} onChange={(e) => form.setData('corrective_actions', e.target.value)} className="mt-1 block w-full rounded-md border-slate-300 text-sm" />
+                                        </div>
+                                        <div>
+                                            <InputLabel value="Corrective action owner" />
+                                            <input value={form.data.corrective_action_owner} onChange={(e) => form.setData('corrective_action_owner', e.target.value)} className="mt-1 block w-full rounded-md border-slate-300 text-sm" />
+                                        </div>
+                                        <div>
+                                            <InputLabel value="Recurrence prevention" />
+                                            <textarea rows={3} value={form.data.recurrence_prevention} onChange={(e) => form.setData('recurrence_prevention', e.target.value)} className="mt-1 block w-full rounded-md border-slate-300 text-sm" />
                                         </div>
                                     </div>
 
@@ -191,39 +212,67 @@ export default function ReportsIncidentView({
                                 <Field label="Incident Date" value={incident.incident_date} />
                                 <Field label="Incident Time" value={incident.incident_time} />
                                 <Field label="Location" value={incident.location} />
+                                <Field label="Category" value={incident.categoryLabel} />
+                                <Field label="Sub-category" value={incident.subCategory} />
+                                <Field label="Severity" value={incident.severityLabel} />
                                 <Field label="Reporter" value={incident.reporter} />
-                                <Field label="Duration" value={incident.duration_minutes ? `${incident.duration_minutes} minutes` : '-'} />
                                 <Field label="Submitted" value={incident.submitted_at} />
                             </div>
                         </SectionCard>
 
-                        <SectionCard title="Antecedent">
-                            <p className="whitespace-pre-wrap text-sm text-slate-700">{incident.antecedent || 'Not recorded'}</p>
-                        </SectionCard>
-
-                        <SectionCard title="Behaviour">
-                            <p className="whitespace-pre-wrap text-sm text-slate-700">{incident.behaviour || 'Not recorded'}</p>
-                        </SectionCard>
-
-                        <SectionCard title="Consequence" dark>
+                        <SectionCard title="Narrative & response">
                             <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-                                <p className="whitespace-pre-wrap text-sm text-slate-200">{incident.consequence || 'Not recorded'}</p>
-                                <p className="whitespace-pre-wrap text-sm text-slate-200">{incident.immediate_outcome || 'Not recorded'}</p>
+                                <Field label="Narrative description" value={incident.narrative_description} wide />
+                                <Field label="Immediate actions taken" value={incident.immediate_actions_taken} wide />
+                                <Field label="Witness details" value={incident.witness_details} wide />
+                                <Field label="Staff present" value={incident.staff_members?.join(', ') || '-'} wide />
                             </div>
                         </SectionCard>
 
-                        <SectionCard title="Post-Incident Review" dark>
-                            <div className="grid grid-cols-1 gap-4">
-                                <p className="whitespace-pre-wrap text-sm text-slate-200">{incident.lessons_learnt || 'Not recorded'}</p>
-                                <p className="whitespace-pre-wrap text-sm text-slate-200">{incident.actions_planned || 'Not recorded'}</p>
+                        <SectionCard title="Injuries & medical contact">
+                            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+                                <Field label="Injuries sustained" value={incident.injuries_sustained ? 'Yes' : 'No'} />
+                                <Field label="Injury details" value={incident.injuries_details} />
+                                <Field label="Medical contact made" value={incident.medical_contact_made ? 'Yes' : 'No'} />
+                                <Field label="Contact type" value={incident.medical_contact_type} />
+                                <Field label="Contact outcome" value={incident.medical_contact_outcome} wide />
                             </div>
                         </SectionCard>
+
+                        <SectionCard title="Notifications & regulatory flags">
+                            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+                                <Field label="Family / NOK notified" value={incident.family_notified ? 'Yes' : 'No'} />
+                                <Field label="Family notification time" value={incident.family_notified_at} />
+                                <Field label="Social worker / commissioner notified" value={incident.social_worker_notified ? 'Yes' : 'No'} />
+                                <Field label="Social worker notification time" value={incident.social_worker_notified_at} />
+                                <Field label="Safeguarding referral submitted" value={incident.safeguarding_referral_submitted ? 'Yes' : 'No'} />
+                                <Field label="Safeguarding reference" value={incident.safeguarding_referral_reference} />
+                                <Field label="RIDDOR reportable" value={incident.riddor_reportable ? 'Yes' : 'No'} />
+                            </div>
+                        </SectionCard>
+
+                        <SectionCard title="Corrective actions & prevention">
+                            <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+                                <Field label="Corrective actions planned" value={incident.corrective_actions_planned} wide />
+                                <Field label="Responsible owner" value={incident.corrective_action_owner} />
+                                <Field label="Recurrence prevention measures" value={incident.recurrence_prevention} wide />
+                            </div>
+                        </SectionCard>
+
+                        {(incident.antecedent || incident.behaviour || incident.consequence) && (
+                        <SectionCard title="Optional ABC detail">
+                            <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
+                                <Field label="Antecedent" value={incident.antecedent} wide />
+                                <Field label="Behaviour" value={incident.behaviour} wide />
+                                <Field label="Consequence" value={incident.consequence} wide />
+                            </div>
+                        </SectionCard>
+                        )}
 
                         <SectionCard title="Manager Sign-off">
-                            <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+                            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                                 <Field label="Manager Name" value={incident.manager_name} />
                                 <Field label="Signed Off" value={incident.manager_sign_off ? 'Yes' : 'No'} />
-                                <Field label="Involved Staff" value={incident.staff_members?.join(', ') || '-'} />
                             </div>
                         </SectionCard>
                     </main>

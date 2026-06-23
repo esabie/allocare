@@ -120,9 +120,9 @@
         </table>
     @endif
 
-    <h2>Care journal (latest {{ count($journal) }})</h2>
+    <h2>Care notes (latest {{ count($journal) }})</h2>
     @if(count($journal) === 0)
-        <p class="empty">No journal entries.</p>
+        <p class="empty">No care notes.</p>
     @else
         @foreach($journal as $entry)
             <p><strong>{{ $entry['when'] }}</strong> — {{ $entry['author'] }}<br>{{ $entry['body'] }}</p>

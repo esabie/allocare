@@ -6,6 +6,7 @@ import InputError from '@/Components/InputError';
 import InputLabel from '@/Components/InputLabel';
 import PrimaryButton from '@/Components/PrimaryButton';
 import ProfileMenu from '@/Components/ProfileMenu';
+import ReportPagination, { paginatorData } from '@/Components/ReportPagination';
 
 const statusStyles = {
     pending: 'bg-amber-100 text-amber-800',
@@ -75,6 +76,8 @@ export default function ReportsGdpr({
         published_at: '',
         is_active: true,
     });
+
+    const requestItems = paginatorData(requests);
 
     const submitRequest = (event) => {
         event.preventDefault();
@@ -351,11 +354,11 @@ export default function ReportsGdpr({
                                 </form>
                             )}
 
-                            {requests.length === 0 ? (
+                            {requestItems.length === 0 ? (
                                 <p className="rounded-xl bg-slate-50 p-8 text-center text-sm text-slate-500">No privacy requests logged yet.</p>
                             ) : (
                                 <ul className="space-y-3">
-                                    {requests.map((request) => (
+                                    {requestItems.map((request) => (
                                         <li key={request.id} id={`privacy-request-${request.id}`} className="rounded-xl border border-slate-200 p-4 scroll-mt-24">
                                             <div className="flex flex-wrap items-start justify-between gap-3">
                                                 <div>
@@ -567,6 +570,7 @@ export default function ReportsGdpr({
                                     ))}
                                 </ul>
                             )}
+                            <ReportPagination pagination={requests} />
                         </section>
 
                         <section id="retention-schedules" className="mt-8 scroll-mt-24 rounded-2xl bg-white p-5 shadow-sm">

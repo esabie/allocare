@@ -62,7 +62,7 @@ function normalizeDobForSubmit(value) {
     return value;
 }
 
-export default function EmployeesCreate() {
+export default function EmployeesCreate({ careGroups = [] }) {
     const { initialSnapshot = {}, errors: serverErrors = {} } = usePage().props;
     const shouldRestoreSnapshot = (() => {
         if (typeof window === 'undefined' || typeof performance === 'undefined') return true;
@@ -76,6 +76,11 @@ export default function EmployeesCreate() {
     const [photoFile, setPhotoFile] = useState(null);
     const [photoError, setPhotoError] = useState('');
     const [isOnline, setIsOnline] = useState(typeof navigator !== 'undefined' ? navigator.onLine : true);
+    const [selectedCareGroups, setSelectedCareGroups] = useState(() => {
+        const saved = shouldRestoreSnapshot ? snapshot?.assigned_care_groups : null;
+        return Array.isArray(saved) ? saved : [];
+    });
+    const [careGroupError, setCareGroupError] = useState('');
 
     const normalizeDateForInput = (value) => {
         if (!value) return '';
@@ -126,6 +131,7 @@ export default function EmployeesCreate() {
     const saveDraft = () => {
         const snapshot = collectSnapshot();
         if (!snapshot) return;
+        snapshot.assigned_care_groups = selectedCareGroups;
         postWithOfflineQueue(route('form-snapshots.save', { formKey: 'employee-create' }), { data: snapshot }, {});
     };
 
@@ -136,6 +142,8 @@ export default function EmployeesCreate() {
         setPhotoPreview('');
         setPhotoFile(null);
         setPhotoError('');
+        setSelectedCareGroups([]);
+        setCareGroupError('');
         if (fileInputRef.current) {
             fileInputRef.current.value = '';
         }
@@ -159,11 +167,16 @@ export default function EmployeesCreate() {
     const completeRegistration = () => {
         const snapshot = collectSnapshot();
         if (!snapshot) return;
+        if (!selectedCareGroups.length) {
+            setCareGroupError('Select at least one assigned care group.');
+            return;
+        }
+        setCareGroupError('');
         if (!isOnline && photoFile) {
             setPhotoError('Photo uploads require an internet connection. Save draft offline and submit once online.');
             return;
         }
-        const payload = { ...snapshot };
+        const payload = { ...snapshot, assigned_care_groups: selectedCareGroups };
         if (payload.date_of_birth) {
             payload.date_of_birth = normalizeDobForSubmit(payload.date_of_birth);
         }
@@ -192,6 +205,15 @@ export default function EmployeesCreate() {
             window.removeEventListener('offline', onOffline);
         };
     }, []);
+
+    const toggleCareGroup = (value) => {
+        setCareGroupError('');
+        setSelectedCareGroups((current) => (
+            current.includes(value)
+                ? current.filter((item) => item !== value)
+                : [...current, value]
+        ));
+    };
 
     const errorMessages = Object.values(serverErrors || {});
 
@@ -391,12 +413,32 @@ export default function EmployeesCreate() {
                                             <label className="mb-1 block text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-500">
                                                 Assigned Care Groups
                                             </label>
-                                            <div className="rounded-md border border-slate-200 bg-slate-50 p-2 text-sm">
-                                                <div className="flex flex-wrap gap-2">
-                                                    <span className="rounded-full bg-emerald-100 px-2 py-1 text-xs font-medium text-emerald-700">Palliative Care</span>
-                                                    <span className="rounded-full bg-emerald-100 px-2 py-1 text-xs font-medium text-emerald-700">Acute Response</span>
+                                            <p className="mb-2 text-xs text-slate-500">
+                                                Select the service types this staff member can be allocated to. These match service user care groups.
+                                            </p>
+                                            <div className="rounded-md border border-slate-200 bg-slate-50 p-3">
+                                                <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                                                    {careGroups.map((group) => (
+                                                        <label
+                                                            key={group.value}
+                                                            className="flex cursor-pointer items-start gap-2 rounded-md border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700"
+                                                        >
+                                                            <input
+                                                                type="checkbox"
+                                                                checked={selectedCareGroups.includes(group.value)}
+                                                                onChange={() => toggleCareGroup(group.value)}
+                                                                className="mt-0.5 h-4 w-4 rounded border-slate-300 text-emerald-600"
+                                                            />
+                                                            <span>{group.label}</span>
+                                                        </label>
+                                                    ))}
                                                 </div>
                                             </div>
+                                            {(careGroupError || serverErrors.assigned_care_groups) && (
+                                                <p className="mt-2 text-xs font-medium text-rose-600">
+                                                    {careGroupError || serverErrors.assigned_care_groups}
+                                                </p>
+                                            )}
                                         </div>
                                     </div>
                                 </Section>
@@ -409,12 +451,9 @@ export default function EmployeesCreate() {
                                         <Field label="Password" name="password" placeholder="••••••••••" defaultValue={snapshot.password || ''} />
                                     </div>
                                     <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-3">
-                                        <div className="mb-2 flex items-center justify-between">
-                                            <p className="text-sm font-semibold text-slate-900">Multi-Factor Authentication (MFA)</p>
-                                            <input type="checkbox" name="mfa_enabled" defaultChecked={snapshot.mfa_enabled !== false} className="h-4 w-4 rounded border-slate-300 text-emerald-600" />
-                                        </div>
-                                        <p className="text-xs text-slate-600">
-                                            Require a secondary verification code for all login attempts. Mandatory for admin and senior clinical roles.
+                                        <p className="text-sm font-semibold text-slate-900">Two-factor authentication</p>
+                                        <p className="mt-2 text-xs text-slate-600">
+                                            Required for all accounts. The employee will set up an authenticator app on first login.
                                         </p>
                                     </div>
                                 </div>

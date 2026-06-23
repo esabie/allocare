@@ -3,6 +3,7 @@ import { useState } from 'react';
 import AppHeaderNav from '@/Components/AppHeaderNav';
 import DashboardSidebar from '@/Components/DashboardSidebar';
 import ProfileMenu from '@/Components/ProfileMenu';
+import ReportPagination, { paginatorData } from '@/Components/ReportPagination';
 
 function StatCard({ label, value, accent = 'text-slate-900' }) {
     return (
@@ -20,6 +21,8 @@ export default function ReportsStaffPerformance({ stats = {}, byStaff = [], filt
     const applyFilters = () => {
         router.get(route('reports.staff-performance'), { from, to }, { preserveState: true, preserveScroll: true });
     };
+
+    const staffRows = paginatorData(byStaff);
 
     return (
         <>
@@ -61,6 +64,12 @@ export default function ReportsStaffPerformance({ stats = {}, byStaff = [], filt
                                 <button type="button" onClick={applyFilters} className="rounded-lg bg-emerald-600 px-4 py-2 text-xs font-semibold text-white hover:bg-emerald-700">
                                     Apply
                                 </button>
+                                <a
+                                    href={route('reports.staff-performance.export.pdf', { from, to })}
+                                    className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+                                >
+                                    Export PDF
+                                </a>
                             </div>
                         </section>
 
@@ -85,12 +94,12 @@ export default function ReportsStaffPerformance({ stats = {}, byStaff = [], filt
                                         </tr>
                                     </thead>
                                     <tbody className="divide-y divide-slate-100">
-                                        {byStaff.length === 0 ? (
+                                        {staffRows.length === 0 ? (
                                             <tr>
                                                 <td colSpan={7} className="px-4 py-8 text-center text-slate-500">No shift data in range.</td>
                                             </tr>
                                         ) : (
-                                            byStaff.map((row) => (
+                                            staffRows.map((row) => (
                                                 <tr key={row.staffId ?? row.staffName}>
                                                     <td className="px-4 py-3 font-medium text-slate-900">{row.staffName}</td>
                                                     <td className="px-4 py-3">{row.totalShifts}</td>
@@ -105,6 +114,7 @@ export default function ReportsStaffPerformance({ stats = {}, byStaff = [], filt
                                     </tbody>
                                 </table>
                             </div>
+                            <ReportPagination pagination={byStaff} className="px-4 pb-4" />
                         </section>
                     </main>
                 </div>

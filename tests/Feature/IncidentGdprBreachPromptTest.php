@@ -21,18 +21,34 @@ class IncidentGdprBreachPromptTest extends TestCase
         ]);
 
         $payload = [
-            'data' => [
-                'status' => 'Submitted',
+            'data' => array_merge([
+                'incidentCategory' => 'safeguarding-concern',
+                'incidentSubCategory' => 'Physical abuse',
+                'severity' => 'high',
                 'incidentTitle' => 'Records left visible',
-                'selectedImpacts' => ['Personal / confidential data'],
-                'behaviour' => 'Patient notes were visible to visitor',
-                'consequence' => 'Staff secured records',
-                'immediateOutcome' => 'No further exposure',
-                'lessonsLearnt' => 'Review privacy',
-                'actionsPlanned' => 'Training',
+                'incidentDate' => '2026-05-28',
+                'incidentTime' => '14:30',
+                'location' => 'Lounge',
+                'reporterName' => 'Test Carer',
+                'narrativeDescription' => 'Patient notes were visible to visitor.',
+                'witnessDetails' => 'None recorded',
+                'immediateActionsTaken' => 'Staff secured records',
+                'injuriesSustained' => false,
+                'medicalContactMade' => false,
+                'familyNotified' => false,
+                'socialWorkerNotified' => false,
+                'safeguardingReferralSubmitted' => false,
+                'riddorReportable' => false,
+                'recurrencePrevention' => 'Review privacy',
+                'correctiveActionsPlanned' => 'Training',
+                'correctiveActionOwner' => 'Manager One',
                 'managerName' => 'Manager One',
                 'managerSignOff' => true,
-            ],
+                'staffMembers' => ['Test Carer'],
+                'selectedImpacts' => ['Personal / confidential data'],
+                'behaviour' => 'Patient notes were visible to visitor',
+                'status' => 'Submitted',
+            ]),
         ];
 
         $this->actingAs($user)

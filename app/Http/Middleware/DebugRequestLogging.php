@@ -35,6 +35,7 @@ class DebugRequestLogging
             $durationMs = (int) ((microtime(true) - $start) * 1000);
             $this->writeAuditEntry($request, 500, $durationMs, $exception->getMessage());
             AuditTrail::recordSystemActivity($request, 500, $durationMs, $exception->getMessage());
+            AuditTrail::recordInteraction($request, 500, $durationMs, $exception->getMessage());
 
             if (app()->isLocal()) {
                 Log::error('Request exception', [
@@ -63,6 +64,7 @@ class DebugRequestLogging
 
         $this->writeAuditEntry($request, $status, $durationMs);
         AuditTrail::recordSystemActivity($request, $status, $durationMs);
+        AuditTrail::recordInteraction($request, $status, $durationMs);
 
         return $response;
     }

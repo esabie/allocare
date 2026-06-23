@@ -57,13 +57,15 @@ export default function AdminActivityLogs({ logs = [], tableAvailable = true, lo
                                                 <th className="border border-slate-200 px-3 py-2">Path</th>
                                                 <th className="border border-slate-200 px-3 py-2">Status</th>
                                                 <th className="border border-slate-200 px-3 py-2">Duration (ms)</th>
+                                                <th className="border border-slate-200 px-3 py-2">Device</th>
                                                 <th className="border border-slate-200 px-3 py-2">IP Address</th>
+                                                <th className="border border-slate-200 px-3 py-2">Session</th>
                                             </tr>
                                         </thead>
                                         <tbody>
                                             {logs.length === 0 ? (
                                                 <tr>
-                                                    <td colSpan={9} className="border border-slate-200 px-3 py-6 text-center text-slate-500">
+                                                    <td colSpan={11} className="border border-slate-200 px-3 py-6 text-center text-slate-500">
                                                         No activity log entries found.
                                                     </td>
                                                 </tr>
@@ -78,7 +80,11 @@ export default function AdminActivityLogs({ logs = [], tableAvailable = true, lo
                                                         <td className="border border-slate-200 px-3 py-2 font-mono text-xs">{log.path || '-'}</td>
                                                         <td className="border border-slate-200 px-3 py-2">{log.status ?? '-'}</td>
                                                         <td className="border border-slate-200 px-3 py-2">{log.duration_ms ?? '-'}</td>
+                                                        <td className="border border-slate-200 px-3 py-2">{log.device_type || '-'}</td>
                                                         <td className="border border-slate-200 px-3 py-2">{log.ip_address || '-'}</td>
+                                                        <td className="border border-slate-200 px-3 py-2 font-mono text-[11px] text-slate-500">
+                                                            {log.session_id ? `${log.session_id.slice(0, 8)}…` : '-'}
+                                                        </td>
                                                     </tr>
                                                 ))
                                             )}

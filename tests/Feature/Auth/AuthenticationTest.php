@@ -4,6 +4,7 @@ namespace Tests\Feature\Auth;
 
 use App\Models\User;
 use App\Providers\RouteServiceProvider;
+use App\Support\TwoFactorAuthentication;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
 
@@ -18,7 +19,7 @@ class AuthenticationTest extends TestCase
         $response->assertStatus(200);
     }
 
-    public function test_users_can_authenticate_using_the_login_screen(): void
+    public function test_users_with_two_factor_are_sent_to_challenge_after_password(): void
     {
         $user = User::factory()->create();
 
@@ -27,8 +28,40 @@ class AuthenticationTest extends TestCase
             'password' => 'password',
         ]);
 
+        $this->assertGuest();
+        $response->assertRedirect(route('two-factor.login'));
+    }
+
+    public function test_users_can_complete_login_with_authenticator_code(): void
+    {
+        $user = User::factory()->create();
+        $twoFactor = app(TwoFactorAuthentication::class);
+        $code = $twoFactor->currentCode(TwoFactorAuthentication::DEMO_SECRET);
+
+        $this->post('/login', [
+            'email' => $user->email,
+            'password' => 'password',
+        ]);
+
+        $response = $this->post('/two-factor-challenge', [
+            'code' => $code,
+        ]);
+
         $this->assertAuthenticated();
         $response->assertRedirect(RouteServiceProvider::HOME);
+    }
+
+    public function test_users_without_two_factor_are_sent_to_setup_after_password(): void
+    {
+        $user = User::factory()->withoutTwoFactor()->create();
+
+        $response = $this->post('/login', [
+            'email' => $user->email,
+            'password' => 'password',
+        ]);
+
+        $this->assertGuest();
+        $response->assertRedirect(route('two-factor.setup'));
     }
 
     public function test_users_can_not_authenticate_with_invalid_password(): void
@@ -40,21 +73,6 @@ class AuthenticationTest extends TestCase
             'password' => 'wrong-password',
         ]);
 
-        $this->assertGuest();
-    }
-
-    public function test_users_with_disabled_mfa_cannot_authenticate(): void
-    {
-        $user = User::factory()->create([
-            'mfa_enabled' => false,
-        ]);
-
-        $response = $this->post('/login', [
-            'email' => $user->email,
-            'password' => 'password',
-        ]);
-
-        $response->assertSessionHasErrors('email');
         $this->assertGuest();
     }
 

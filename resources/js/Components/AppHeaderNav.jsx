@@ -2,7 +2,9 @@ import { Link } from '@inertiajs/react';
 import { usePage } from '@inertiajs/react';
 
 export default function AppHeaderNav({ active = null }) {
-    const canViewReports = Boolean(usePage().props?.auth?.user?.canViewReports);
+    const authUser = usePage().props?.auth?.user;
+    const canViewReports = Boolean(authUser?.canViewReports);
+    const canEscalateIncidents = Boolean(authUser?.canEscalateIncidents);
     const linkClass = (key) =>
         key === active ? 'text-slate-900' : 'hover:text-slate-900';
 
@@ -21,9 +23,11 @@ export default function AppHeaderNav({ active = null }) {
                 <Link href={route('reports')} className={`shrink-0 ${linkClass('reports')}`}>
                     Reports
                 </Link>
-            ) : (
-                <span className="shrink-0">Reports</span>
-            )}
+            ) : canEscalateIncidents ? (
+                <Link href={route('reports.incidents')} className={`shrink-0 ${linkClass('reports')}`}>
+                    Incidents
+                </Link>
+            ) : null}
         </div>
     );
 }

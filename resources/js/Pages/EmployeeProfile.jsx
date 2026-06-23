@@ -61,6 +61,8 @@ function trainingStatusBadge(status) {
 
 export default function EmployeeProfile({
     employee = {},
+    careGroups = [],
+    canResetTwoFactor = false,
     trainingRecords = [],
     competencies = [],
     supervisions = [],
@@ -93,6 +95,7 @@ export default function EmployeeProfile({
         dbs_issue_date: employee.dbs_issue_date || '',
         dbs_expiry_date: employee.dbs_expiry_date || '',
         dbs_status: employee.dbs_status || '',
+        assigned_care_groups: Array.isArray(employee.assigned_care_groups) ? employee.assigned_care_groups : [],
     });
 
     const [showTrainingForm, setShowTrainingForm] = useState(false);
@@ -103,6 +106,18 @@ export default function EmployeeProfile({
 
     const handleChange = (e) => {
         setForm({ ...form, [e.target.name]: e.target.value });
+    };
+
+    const toggleCareGroup = (value) => {
+        setForm((current) => {
+            const groups = Array.isArray(current.assigned_care_groups) ? current.assigned_care_groups : [];
+            return {
+                ...current,
+                assigned_care_groups: groups.includes(value)
+                    ? groups.filter((item) => item !== value)
+                    : [...groups, value],
+            };
+        });
     };
 
     const saveProfile = () => {
@@ -150,6 +165,16 @@ export default function EmployeeProfile({
             forceFormData: true,
             preserveScroll: true,
             onSuccess: () => { setShowDocumentForm(false); setUploadFile(null); e.target.reset(); },
+        });
+    };
+
+    const resetTwoFactor = () => {
+        if (!window.confirm(`Reset two-factor authentication for ${employee.first_name} ${employee.surname}? They will need to set up a new authenticator app on next login.`)) {
+            return;
+        }
+
+        router.post(route('employees.reset-two-factor', employee.id), {}, {
+            preserveScroll: true,
         });
     };
 
@@ -219,6 +244,7 @@ export default function EmployeeProfile({
                         </nav>
 
                         {activeTab === 'Profile' && (
+                            <>
                             <Section title="Personal & Contact Details" action={
                                 canEditStaffInfo && !editing ? (
                                     <button type="button" onClick={() => setEditing(true)} className="rounded-lg bg-slate-900 px-4 py-2 text-xs font-semibold text-white">Edit Profile</button>
@@ -243,6 +269,20 @@ export default function EmployeeProfile({
                                         <Field label="Postcode" value={employee.postcode} />
                                         <Field label="Primary Role" value={employee.role_label || employee.primary_role} />
                                         <Field label="Account Status" value={employee.account_status} />
+                                        <div className="sm:col-span-2 lg:col-span-3">
+                                            <dt className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Assigned Care Groups</dt>
+                                            <dd className="mt-2 flex flex-wrap gap-2">
+                                                {(employee.assigned_care_group_labels || []).length > 0 ? (
+                                                    employee.assigned_care_group_labels.map((label) => (
+                                                        <span key={label} className="rounded-full bg-emerald-100 px-2.5 py-1 text-xs font-medium text-emerald-700">
+                                                            {label}
+                                                        </span>
+                                                    ))
+                                                ) : (
+                                                    <span className="text-sm text-slate-500">None assigned</span>
+                                                )}
+                                            </dd>
+                                        </div>
                                     </div>
                                 )
                                 : (
@@ -301,9 +341,61 @@ export default function EmployeeProfile({
                                                 <option value="care_worker">Care Worker</option>
                                             </select>
                                         </div>
+                                        <div className="sm:col-span-2 lg:col-span-3">
+                                            <label className="mb-1 block text-[10px] font-semibold uppercase tracking-wide text-slate-500">Assigned Care Groups</label>
+                                            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                                                {careGroups.map((group) => (
+                                                    <label
+                                                        key={group.value}
+                                                        className="flex cursor-pointer items-start gap-2 rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700"
+                                                    >
+                                                        <input
+                                                            type="checkbox"
+                                                            checked={form.assigned_care_groups.includes(group.value)}
+                                                            onChange={() => toggleCareGroup(group.value)}
+                                                            className="mt-0.5 h-4 w-4 rounded border-slate-300 text-emerald-600"
+                                                        />
+                                                        <span>{group.label}</span>
+                                                    </label>
+                                                ))}
+                                            </div>
+                                            {serverErrors.assigned_care_groups && (
+                                                <p className="mt-2 text-xs text-rose-600">{serverErrors.assigned_care_groups}</p>
+                                            )}
+                                        </div>
                                     </div>
                                 )}
                             </Section>
+
+                            <div className="mt-5">
+                                <Section title="Access Security">
+                                    <div className="flex flex-wrap items-start justify-between gap-4">
+                                        <div>
+                                            <p className="text-sm font-medium text-slate-900">Authenticator app (TOTP)</p>
+                                            <p className="mt-1 text-sm text-slate-600">
+                                                {employee.two_factor_enabled
+                                                    ? `Enabled${employee.two_factor_confirmed_at ? ` since ${employee.two_factor_confirmed_at} UTC` : ''}.`
+                                                    : 'Not set up yet. Required before the employee can access clinical or personal data.'}
+                                            </p>
+                                        </div>
+                                        {canResetTwoFactor && employee.two_factor_enabled && (
+                                            <button
+                                                type="button"
+                                                onClick={resetTwoFactor}
+                                                className="rounded-lg border border-amber-300 bg-amber-50 px-4 py-2 text-xs font-semibold text-amber-900 transition hover:bg-amber-100"
+                                            >
+                                                Reset 2FA
+                                            </button>
+                                        )}
+                                    </div>
+                                    {canResetTwoFactor && (
+                                        <p className="mt-3 text-xs text-slate-500">
+                                            Use reset when someone has lost their device and has no recovery codes. They must complete authenticator setup again on next login.
+                                        </p>
+                                    )}
+                                </Section>
+                            </div>
+                            </>
                         )}
 
                         {activeTab === 'DBS & Compliance' && (

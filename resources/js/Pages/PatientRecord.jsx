@@ -5,6 +5,16 @@ import PatientRecordSidebar from '@/Components/PatientRecordSidebar';
 import AppHeaderNav from '@/Components/AppHeaderNav';
 import ProfileMenu from '@/Components/ProfileMenu';
 
+function lifecycleBadgeClass(status) {
+    if (status === 'inactive') {
+        return 'bg-amber-100 text-amber-800';
+    }
+    if (status === 'finished') {
+        return 'bg-slate-200 text-slate-700';
+    }
+    return 'bg-emerald-100 text-emerald-800';
+}
+
 function displayValue(value, fallback = 'Not recorded') {
     if (value === null || value === undefined || String(value).trim() === '') {
         return fallback;
@@ -20,14 +30,24 @@ export default function PatientRecord({
     nextVisit = null,
     medicationStatus = null,
     canEditProfile = false,
+    careGroups = [],
+    careGroupHistory = [],
     recentJournalEntries = [],
 }) {
     const authUser = usePage().props?.auth?.user;
     const flash = usePage().props?.flash;
     const isSuperAdmin = authUser?.primary_role === 'super_admin';
     const [showRagUpdate, setShowRagUpdate] = useState(false);
+    const [showLifecycleUpdate, setShowLifecycleUpdate] = useState(false);
+    const [showCareGroupUpdate, setShowCareGroupUpdate] = useState(false);
     const [showProfileEdit, setShowProfileEdit] = useState(false);
-    const [newRag, setNewRag] = useState(patient?.ragStatus || '');
+    const [newRag, setNewRag] = useState(() => {
+        const raw = String(patient?.ragStatusLabel || patient?.ragStatus || 'GREEN').toUpperCase();
+        return ['GREEN', 'AMBER', 'RED'].includes(raw) ? raw : 'GREEN';
+    });
+    const [newLifecycleStatus, setNewLifecycleStatus] = useState(() => patient?.lifecycleStatus || 'active');
+    const [newCareGroup, setNewCareGroup] = useState(() => patient?.careGroup || '');
+    const [careGroupReason, setCareGroupReason] = useState('');
     const [queueMessage, setQueueMessage] = useState('');
 
     const allergyDetails = Array.isArray(patient?.allergyDetails) && patient.allergyDetails.length
@@ -67,6 +87,11 @@ export default function PatientRecord({
         next_of_kin_email: patient?.nextOfKinEmail || '',
         other_relevant_people: patient?.otherRelevantPeople || '',
         social_services_number: patient?.socialServicesNumber || '',
+        nhs_number: patient?.nhsNumber || '',
+        email: patient?.email || '',
+        phone: patient?.phone || '',
+        weight_kg: patient?.weightKg ? String(patient.weightKg) : '',
+        height_m: patient?.heightM ? String(patient.heightM) : '',
     });
 
     const patientName = patient?.name || 'Unknown Patient';
@@ -74,12 +99,17 @@ export default function PatientRecord({
         ? `${patientName} (${patient.preferredName})`
         : patientName;
     const patientDob = patient?.dob || 'Not provided';
-    const patientNhs = patient?.nhsNumber || 'Not provided';
+    const patientNhs = patient?.nhsNumber || 'Not recorded';
+    const outstandingProfileFields = Array.isArray(patient?.outstandingProfileFields) ? patient.outstandingProfileFields : [];
+    const profileCompletionDueAt = patient?.profileCompletionDueAt ? new Date(patient.profileCompletionDueAt) : null;
+    const showProfileCompletionPrompt = outstandingProfileFields.length > 0 && !patient?.profileCompletedAt;
     const patientAddress = patient?.address || 'Not provided';
     const patientPhone = patient?.phone || 'Not provided';
     const patientRagStatus = (patient?.ragStatus || 'Not set').toString();
     const patientStaffingRatio = patient?.staffingRatio || '--';
     const statusLabel = patient?.ragStatus || patient?.status || 'GREEN';
+    const lifecycleStatus = patient?.lifecycleStatus || 'active';
+    const lifecycleStatusLabel = patient?.lifecycleStatusLabel || 'Active';
     const ragLabel = patientRagStatus === 'Not set'
         ? 'Not set'
         : patientRagStatus.charAt(0).toUpperCase() + patientRagStatus.slice(1).toLowerCase();
@@ -120,7 +150,7 @@ export default function PatientRecord({
     const submitProfile = async (event) => {
         event.preventDefault();
         setQueueMessage('');
-        await routerPatchWithOffline(route('patients.profile.update', patientSlug), data, {
+        await routerPatchWithOffline(route('patients.profile.update', { patient: patientSlug }), data, {
             onSuccess: () => setShowProfileEdit(false),
             onQueued: () => {
                 setShowProfileEdit(false);
@@ -152,8 +182,8 @@ export default function PatientRecord({
                             <AppHeaderNav active="patients" />
 
                             <div className="flex flex-wrap items-center gap-3">
-                                <Link href={route('journal')} className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-600">
-                                    Add Note
+                                <Link href={route('patients.notes', patientSlug)} className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-600">
+                                    Add note
                                 </Link>
                                 <Link href={route('patients.observations', patientSlug)} className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-600">
                                     Add Observation
@@ -174,6 +204,30 @@ export default function PatientRecord({
                             </div>
                         )}
 
+                        {showProfileCompletionPrompt && (
+                            <div className="mb-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-4 text-sm text-amber-950">
+                                <p className="font-semibold">Incomplete profile</p>
+                                <p className="mt-1 text-amber-900">
+                                    This registration is complete for care delivery, but the following fields should be added when available
+                                    {profileCompletionDueAt ? ` by ${profileCompletionDueAt.toLocaleString('en-GB', { dateStyle: 'medium', timeStyle: 'short' })}` : ''}.
+                                </p>
+                                <ul className="mt-2 list-disc space-y-1 pl-5">
+                                    {outstandingProfileFields.map((field) => (
+                                        <li key={field.key}>{field.label}</li>
+                                    ))}
+                                </ul>
+                                {canEditProfile && (
+                                    <button
+                                        type="button"
+                                        onClick={openProfileEdit}
+                                        className="mt-3 rounded-lg bg-amber-900 px-3 py-1.5 text-xs font-semibold text-white hover:bg-amber-800"
+                                    >
+                                        Complete profile
+                                    </button>
+                                )}
+                            </div>
+                        )}
+
                         <div className="mb-4 flex items-center gap-2 text-xs font-medium text-slate-500">
                             <Link href={route('dashboard')} className="hover:text-slate-700">Dashboard</Link>
                             <span>/</span>
@@ -189,7 +243,13 @@ export default function PatientRecord({
                                     <span className={`mt-3 inline-flex rounded-full px-3 py-1 text-xs font-semibold uppercase tracking-wide ${ragBadgeClass}`}>
                                         RAG: {ragLabel}
                                     </span>
+                                    <span className={`mt-3 ml-2 inline-flex rounded-full px-3 py-1 text-xs font-semibold uppercase tracking-wide ${lifecycleBadgeClass(lifecycleStatus)}`}>
+                                        {lifecycleStatusLabel}
+                                    </span>
                                     <p className="mt-1 text-sm text-slate-500">DOB: {patientDob} • NHS: {patientNhs}</p>
+                                    {patient?.careGroupLabel && (
+                                        <p className="mt-1 text-sm text-slate-500">Care group: {patient.careGroupLabel}</p>
+                                    )}
                                     <p className="mt-1 text-sm text-slate-500">
                                         GP: {displayValue(patient?.gpName)} — {displayValue(patient?.gpPractice, 'Practice not recorded')}
                                         {patient?.gpPhone ? ` • ${patient.gpPhone}` : ''}
@@ -229,6 +289,11 @@ export default function PatientRecord({
                                 <h2 className="mb-4 text-xl font-semibold text-slate-900">Edit clinical profile</h2>
                                 <form onSubmit={submitProfile} className="space-y-4">
                                     <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                                        <input value={data.nhs_number} onChange={(e) => setData('nhs_number', e.target.value)} placeholder="NHS number (10 digits)" className="rounded-lg border border-slate-200 px-3 py-2 text-sm" />
+                                        <input type="email" value={data.email} onChange={(e) => setData('email', e.target.value)} placeholder="Email address" className="rounded-lg border border-slate-200 px-3 py-2 text-sm" />
+                                        <input value={data.phone} onChange={(e) => setData('phone', e.target.value)} placeholder="Phone number" className="rounded-lg border border-slate-200 px-3 py-2 text-sm" />
+                                        <input type="number" min="1" max="500" step="0.1" value={data.weight_kg} onChange={(e) => setData('weight_kg', e.target.value)} placeholder="Weight (kg)" className="rounded-lg border border-slate-200 px-3 py-2 text-sm" />
+                                        <input type="number" min="0.3" max="3" step="0.01" value={data.height_m} onChange={(e) => setData('height_m', e.target.value)} placeholder="Height (m)" className="rounded-lg border border-slate-200 px-3 py-2 text-sm" />
                                         <input value={data.preferred_name} onChange={(e) => setData('preferred_name', e.target.value)} placeholder="Preferred name" className="rounded-lg border border-slate-200 px-3 py-2 text-sm" />
                                         <input value={data.primary_diagnosis} onChange={(e) => setData('primary_diagnosis', e.target.value)} placeholder="Primary diagnosis" className="rounded-lg border border-slate-200 px-3 py-2 text-sm" />
                                         <input value={data.gp_name} onChange={(e) => setData('gp_name', e.target.value)} placeholder="GP name" className="rounded-lg border border-slate-200 px-3 py-2 text-sm" />
@@ -286,11 +351,203 @@ export default function PatientRecord({
 
                         <section className="grid grid-cols-1 gap-4 xl:grid-cols-3">
                             <article className="rounded-2xl bg-white p-5">
+                                <div className="mb-3 flex items-center justify-between gap-3">
+                                    <h2 className="text-2xl font-semibold text-slate-900">Service status</h2>
+                                    {canEditProfile && !showLifecycleUpdate && (
+                                        <button type="button" onClick={() => setShowLifecycleUpdate(true)} className="rounded-lg border border-slate-200 px-3 py-1.5 text-[11px] font-semibold text-slate-700 hover:bg-slate-50">
+                                            Update status
+                                        </button>
+                                    )}
+                                </div>
+                                {showLifecycleUpdate && canEditProfile ? (
+                                    <div className="rounded-lg border border-slate-200 bg-slate-50 p-4">
+                                        <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Lifecycle status</p>
+                                        <p className="mb-3 text-sm text-slate-600">
+                                            Active service users can be rostered. Inactive users are temporarily unavailable. Finished / discharged users are excluded from scheduling and dashboards.
+                                        </p>
+                                        <select
+                                            value={newLifecycleStatus}
+                                            onChange={(event) => setNewLifecycleStatus(event.target.value)}
+                                            className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm"
+                                        >
+                                            <option value="active">Active — available for rota booking</option>
+                                            <option value="inactive">Inactive — temporarily unavailable</option>
+                                            <option value="finished">Finished / Discharged — excluded from scheduling</option>
+                                        </select>
+                                        <div className="mt-3 flex gap-2">
+                                            <button
+                                                type="button"
+                                                onClick={async () => {
+                                                    setQueueMessage('');
+                                                    await routerPatchWithOffline(
+                                                        route('patients.lifecycle-status', { patient: patientSlug }),
+                                                        { lifecycle_status: newLifecycleStatus },
+                                                        {
+                                                            onSuccess: () => setShowLifecycleUpdate(false),
+                                                            onQueued: () => {
+                                                                setShowLifecycleUpdate(false);
+                                                                setQueueMessage('Service status saved offline — will sync when connection returns.');
+                                                            },
+                                                        },
+                                                    );
+                                                }}
+                                                disabled={newLifecycleStatus === lifecycleStatus}
+                                                className="rounded-lg bg-emerald-600 px-4 py-1.5 text-xs font-semibold text-white hover:bg-emerald-700 disabled:opacity-50"
+                                            >
+                                                Save
+                                            </button>
+                                            <button
+                                                type="button"
+                                                onClick={() => {
+                                                    setShowLifecycleUpdate(false);
+                                                    setNewLifecycleStatus(lifecycleStatus);
+                                                }}
+                                                className="rounded-lg border border-slate-200 px-4 py-1.5 text-xs font-medium text-slate-600"
+                                            >
+                                                Cancel
+                                            </button>
+                                        </div>
+                                    </div>
+                                ) : (
+                                    <div className="space-y-2 text-sm text-slate-600">
+                                        <p>
+                                            Current status:{' '}
+                                            <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-semibold uppercase ${lifecycleBadgeClass(lifecycleStatus)}`}>
+                                                {lifecycleStatusLabel}
+                                            </span>
+                                        </p>
+                                        {lifecycleStatus === 'inactive' && (
+                                            <p className="text-amber-800">This service user cannot be booked on the rota until marked Active again.</p>
+                                        )}
+                                        {lifecycleStatus === 'finished' && (
+                                            <p className="text-slate-700">This service user is discharged and excluded from scheduling and operational dashboards.</p>
+                                        )}
+                                    </div>
+                                )}
+                            </article>
+
+                            <article className="rounded-2xl bg-white p-5">
+                                <div className="mb-3 flex items-center justify-between gap-3">
+                                    <h2 className="text-2xl font-semibold text-slate-900">Care group</h2>
+                                    {canEditProfile && !showCareGroupUpdate && (
+                                        <button
+                                            type="button"
+                                            onClick={() => {
+                                                setNewCareGroup(patient?.careGroup || '');
+                                                setCareGroupReason('');
+                                                setShowCareGroupUpdate(true);
+                                            }}
+                                            className="rounded-lg border border-slate-200 px-3 py-1.5 text-[11px] font-semibold text-slate-700 hover:bg-slate-50"
+                                        >
+                                            Change group
+                                        </button>
+                                    )}
+                                </div>
+                                {showCareGroupUpdate && canEditProfile ? (
+                                    <div className="rounded-lg border border-slate-200 bg-slate-50 p-4">
+                                        <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Service type / care group</p>
+                                        <p className="mb-3 text-sm text-slate-600">
+                                            Reclassify this service user when care needs or funding category changes. Updates apply to rostering eligibility, care plans, and reporting.
+                                        </p>
+                                        <select
+                                            value={newCareGroup}
+                                            onChange={(event) => setNewCareGroup(event.target.value)}
+                                            className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm"
+                                        >
+                                            <option value="">Select care group</option>
+                                            {careGroups.map((group) => (
+                                                <option key={group.value} value={group.value}>{group.label}</option>
+                                            ))}
+                                        </select>
+                                        <label className="mb-1 mt-3 block text-[10px] font-semibold uppercase tracking-wide text-slate-500">Reason for change</label>
+                                        <textarea
+                                            rows={2}
+                                            value={careGroupReason}
+                                            onChange={(event) => setCareGroupReason(event.target.value)}
+                                            placeholder="e.g. Care needs increased — moved to complex care package"
+                                            className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm"
+                                        />
+                                        <div className="mt-3 flex gap-2">
+                                            <button
+                                                type="button"
+                                                onClick={async () => {
+                                                    setQueueMessage('');
+                                                    await routerPatchWithOffline(
+                                                        route('patients.care-group', { patient: patientSlug }),
+                                                        { care_group: newCareGroup, reason: careGroupReason || null },
+                                                        {
+                                                            onSuccess: () => {
+                                                                setShowCareGroupUpdate(false);
+                                                                setCareGroupReason('');
+                                                            },
+                                                            onQueued: () => {
+                                                                setShowCareGroupUpdate(false);
+                                                                setQueueMessage('Care group saved offline — will sync when connection returns.');
+                                                            },
+                                                        },
+                                                    );
+                                                }}
+                                                disabled={!newCareGroup || newCareGroup === (patient?.careGroup || '')}
+                                                className="rounded-lg bg-emerald-600 px-4 py-1.5 text-xs font-semibold text-white hover:bg-emerald-700 disabled:opacity-50"
+                                            >
+                                                Save
+                                            </button>
+                                            <button
+                                                type="button"
+                                                onClick={() => {
+                                                    setShowCareGroupUpdate(false);
+                                                    setNewCareGroup(patient?.careGroup || '');
+                                                    setCareGroupReason('');
+                                                }}
+                                                className="rounded-lg border border-slate-200 px-4 py-1.5 text-xs font-medium text-slate-600"
+                                            >
+                                                Cancel
+                                            </button>
+                                        </div>
+                                    </div>
+                                ) : (
+                                    <div className="space-y-3 text-sm text-slate-600">
+                                        <p>
+                                            Current group:{' '}
+                                            <span className="font-semibold text-slate-900">
+                                                {patient?.careGroupLabel || 'Not assigned'}
+                                            </span>
+                                        </p>
+                                        {careGroupHistory.length > 0 && (
+                                            <div>
+                                                <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Change history</p>
+                                                <ul className="space-y-2">
+                                                    {careGroupHistory.map((entry) => (
+                                                        <li key={entry.id} className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-700">
+                                                            <p className="font-medium text-slate-900">
+                                                                {entry.previousCareGroupLabel} → {entry.newCareGroupLabel}
+                                                            </p>
+                                                            <p className="mt-1 text-slate-500">
+                                                                {entry.changedAt} • {entry.changedByName}
+                                                                {entry.reason ? ` • ${entry.reason}` : ''}
+                                                            </p>
+                                                        </li>
+                                                    ))}
+                                                </ul>
+                                            </div>
+                                        )}
+                                    </div>
+                                )}
+                            </article>
+
+                            <article className="rounded-2xl bg-white p-5">
                                 <h2 className="mb-3 text-2xl font-semibold text-slate-900">Identity & Registration</h2>
                                 <div className="space-y-1 text-sm text-slate-600">
                                     <p>{patientName}</p>
                                     <p>{patientAddress}</p>
                                     <p>{patientPhone}</p>
+                                    {patient?.email && <p>{patient.email}</p>}
+                                    {(patient?.weightKg || patient?.heightM) && (
+                                        <p>
+                                            {patient?.weightKg ? `${patient.weightKg} kg` : 'Weight not recorded'}
+                                            {patient?.heightM ? ` • ${patient.heightM} m` : ''}
+                                        </p>
+                                    )}
                                 </div>
                             </article>
 
@@ -328,7 +585,7 @@ export default function PatientRecord({
                                                 onClick={async () => {
                                                     setQueueMessage('');
                                                     await routerPatchWithOffline(
-                                                        route('patients.rag-status', patientSlug),
+                                                        route('patients.rag-status', { patient: patientSlug }),
                                                         { rag_status: newRag },
                                                         {
                                                             onSuccess: () => setShowRagUpdate(false),
@@ -339,12 +596,12 @@ export default function PatientRecord({
                                                         },
                                                     );
                                                 }}
-                                                disabled={newRag === patient?.ragStatus}
+                                                disabled={newRag === String(patient?.ragStatusLabel || patient?.ragStatus || '').toUpperCase()}
                                                 className="rounded-lg bg-emerald-600 px-4 py-1.5 text-xs font-semibold text-white hover:bg-emerald-700 disabled:opacity-50"
                                             >
                                                 Save
                                             </button>
-                                            <button type="button" onClick={() => { setShowRagUpdate(false); setNewRag(patient?.ragStatus || ''); }} className="rounded-lg border border-slate-200 px-4 py-1.5 text-xs font-medium text-slate-600">
+                                            <button type="button" onClick={() => { setShowRagUpdate(false); setNewRag(String(patient?.ragStatusLabel || patient?.ragStatus || 'GREEN').toUpperCase()); }} className="rounded-lg border border-slate-200 px-4 py-1.5 text-xs font-medium text-slate-600">
                                                 Cancel
                                             </button>
                                         </div>
@@ -485,9 +742,9 @@ export default function PatientRecord({
                         <section className="mt-4 grid grid-cols-1 gap-4 xl:grid-cols-3">
                             <article className="rounded-2xl bg-white p-5 xl:col-span-2">
                                 <div className="mb-3 flex items-center justify-between">
-                                    <h2 className="text-2xl font-semibold text-slate-900">Latest Care Logs</h2>
-                                    <Link href={route('journal')} className="text-sm font-semibold text-indigo-600">
-                                        View journal
+                                    <h2 className="text-2xl font-semibold text-slate-900">Latest care notes</h2>
+                                    <Link href={route('patients.notes', patientSlug)} className="text-sm font-semibold text-indigo-600">
+                                        View all notes
                                     </Link>
                                 </div>
                                 <div className="space-y-3 text-sm text-slate-600">
@@ -499,7 +756,7 @@ export default function PatientRecord({
                                             </div>
                                         ))
                                     ) : (
-                                        <p className="rounded-lg bg-slate-50 p-3">No care journal entries for this service user yet.</p>
+                                        <p className="rounded-lg bg-slate-50 p-3">No care notes for this service user yet.</p>
                                     )}
                                 </div>
                             </article>

@@ -30,6 +30,7 @@ class EmployeeCreateTest extends TestCase
                 'primary_role' => 'care_worker',
                 'date_of_birth' => '1990-05-15',
                 'sex' => 'Female',
+                'assigned_care_groups' => ['community_care', 'complex_care'],
             ])
             ->assertRedirect(route('employees'));
 
@@ -38,7 +39,50 @@ class EmployeeCreateTest extends TestCase
             'username' => $username,
             'first_name' => 'Jane',
             'surname' => 'Doe',
+            'mfa_enabled' => true,
         ]);
+
+        $employee = User::query()->where('email', $email)->first();
+        $this->assertFalse($employee->hasTwoFactorEnabled());
+        $this->assertSame(['community_care', 'complex_care'], $employee->assignedCareGroupValues());
+    }
+
+    public function test_employee_create_requires_assigned_care_groups(): void
+    {
+        $admin = User::factory()->create([
+            'primary_role' => 'admin',
+            'email_verified_at' => now(),
+        ]);
+
+        $this->actingAs($admin)
+            ->post(route('employees.store'), [
+                'first_name' => 'Jane',
+                'surname' => 'Doe',
+                'email' => 'no.groups.'.uniqid().'@example.com',
+                'username' => 'nogroups_'.uniqid(),
+                'password' => 'SecurePass1',
+                'assigned_care_groups' => [],
+            ])
+            ->assertSessionHasErrors(['assigned_care_groups']);
+    }
+
+    public function test_employee_create_rejects_invalid_care_group(): void
+    {
+        $admin = User::factory()->create([
+            'primary_role' => 'admin',
+            'email_verified_at' => now(),
+        ]);
+
+        $this->actingAs($admin)
+            ->post(route('employees.store'), [
+                'first_name' => 'Jane',
+                'surname' => 'Doe',
+                'email' => 'bad.group.'.uniqid().'@example.com',
+                'username' => 'badgroup_'.uniqid(),
+                'password' => 'SecurePass1',
+                'assigned_care_groups' => ['invalid_group'],
+            ])
+            ->assertSessionHasErrors(['assigned_care_groups.0']);
     }
 
     public function test_employee_create_accepts_british_date_format(): void
@@ -58,6 +102,7 @@ class EmployeeCreateTest extends TestCase
                 'username' => 'sam_'.uniqid(),
                 'password' => 'SecurePass1',
                 'date_of_birth' => '20/04/1995',
+                'assigned_care_groups' => ['palliative_care'],
             ])
             ->assertRedirect(route('employees'));
 
@@ -84,6 +129,7 @@ class EmployeeCreateTest extends TestCase
                 'username' => 'future_'.uniqid(),
                 'password' => 'SecurePass1',
                 'date_of_birth' => $futureDob,
+                'assigned_care_groups' => ['community_care'],
             ])
             ->assertSessionHasErrors(['date_of_birth']);
     }
@@ -107,6 +153,7 @@ class EmployeeCreateTest extends TestCase
                 'email' => 'taken@example.com',
                 'username' => 'taken_user',
                 'password' => 'SecurePass1',
+                'assigned_care_groups' => ['community_care'],
             ])
             ->assertSessionHasErrors(['email', 'username']);
     }

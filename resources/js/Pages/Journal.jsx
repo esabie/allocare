@@ -1,6 +1,5 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Head, Link, router, useForm, usePage } from '@inertiajs/react';
-import { routerPostWithOffline } from '@/utils/offlineQueue';
 import DashboardSidebar from '@/Components/DashboardSidebar';
 import InputError from '@/Components/InputError';
 import InputLabel from '@/Components/InputLabel';
@@ -12,12 +11,23 @@ const filters = [
     { key: 'mine', label: 'Created by me' },
 ];
 
+function sortJournalEntries(list) {
+    return [...(Array.isArray(list) ? list : [])].sort((a, b) => {
+        const timeA = a?.recordedAt ? new Date(a.recordedAt).getTime() : 0;
+        const timeB = b?.recordedAt ? new Date(b.recordedAt).getTime() : 0;
+        if (timeB !== timeA) {
+            return timeB - timeA;
+        }
+        return (b?.id ?? 0) - (a?.id ?? 0);
+    });
+}
+
 export default function Journal({ entries = [], patients = [], filter = 'all' }) {
     const successMessage = usePage().props?.flash?.success;
     const [showForm, setShowForm] = useState(false);
     const [queueMessage, setQueueMessage] = useState('');
 
-    const { data, setData, processing, errors, reset } = useForm({
+    const { data, setData, post, processing, errors, reset } = useForm({
         patient_id: patients[0]?.id ? String(patients[0].id) : '',
         body: '',
         filter,
@@ -27,41 +37,31 @@ export default function Journal({ entries = [], patients = [], filter = 'all' })
         setData('filter', filter);
     }, [filter]);
 
+    const sortedEntries = useMemo(() => sortJournalEntries(entries), [entries]);
+
     const applyFilter = (nextFilter) => {
-        router.get(route('journal'), { filter: nextFilter }, { preserveState: true, preserveScroll: true });
+        router.get(route('care-notes'), { filter: nextFilter }, { preserveState: true, preserveScroll: true });
     };
 
-    const submitNote = async (event) => {
+    const submitNote = (event) => {
         event.preventDefault();
         setQueueMessage('');
-        await routerPostWithOffline(
-            route('journal.store'),
-            {
-                patient_id: Number(data.patient_id),
-                body: data.body,
-                filter: data.filter,
+        post(route('care-notes.store'), {
+            preserveScroll: true,
+            onSuccess: () => {
+                reset('body');
+                setShowForm(false);
             },
-            {
-                onSuccess: () => {
-                    reset('body');
-                    setShowForm(false);
-                },
-                onQueued: () => {
-                    reset('body');
-                    setShowForm(false);
-                    setQueueMessage('Saved offline — care note will sync when connection returns.');
-                },
-            },
-        );
+        });
     };
 
     return (
         <>
-            <Head title="Clinical Journal" />
+            <Head title="Care Notes" />
 
             <div className="min-h-screen bg-slate-100 text-slate-700">
                 <div className="flex w-full">
-                    <DashboardSidebar active="journal" />
+                    <DashboardSidebar active="care-notes" />
 
                     <main className="flex-1 p-4 sm:p-6 lg:p-8">
                         <header className="mb-6 flex flex-wrap items-center justify-between gap-4 rounded-2xl bg-white px-5 py-4">
@@ -83,11 +83,11 @@ export default function Journal({ entries = [], patients = [], filter = 'all' })
                                             Dashboard
                                         </Link>
                                         <span>/</span>
-                                        <span className="text-slate-900">Journal</span>
+                                        <span className="text-slate-900">Care Notes</span>
                                     </div>
-                                    <h1 className="text-2xl font-semibold text-slate-800">Clinical Journal</h1>
+                                    <h1 className="text-2xl font-semibold text-slate-800">Care Notes</h1>
                                     <p className="mt-1 text-sm text-slate-500">
-                                        Record and review daily care notes in chronological order (most recent first).
+                                        Organisation-wide care notes — newest entries appear at the top. Open a patient&apos;s Notes tab for structured templates and full history.
                                     </p>
                                 </div>
                                 <button
@@ -95,7 +95,7 @@ export default function Journal({ entries = [], patients = [], filter = 'all' })
                                     onClick={() => setShowForm((open) => !open)}
                                     className="rounded-lg bg-emerald-50 px-3 py-2 text-sm font-semibold text-emerald-700 hover:bg-emerald-100"
                                 >
-                                    {showForm ? 'Close form' : '+ New Entry'}
+                                    {showForm ? 'Close form' : '+ New note'}
                                 </button>
                             </div>
 
@@ -172,17 +172,17 @@ export default function Journal({ entries = [], patients = [], filter = 'all' })
                                 </form>
                             )}
 
-                            {entries.length === 0 ? (
+                            {sortedEntries.length === 0 ? (
                                 <div className="mx-auto max-w-md rounded-2xl bg-slate-50 p-10 text-center">
                                     <div className="mx-auto mb-4 h-28 w-28 rounded-2xl bg-slate-200" />
                                     <h3 className="mb-2 text-2xl font-semibold text-slate-700">No care notes yet</h3>
                                     <p className="text-sm text-slate-500">
-                                        Use &ldquo;New Entry&rdquo; to record the first daily care note for your caseload.
+                                        Use &ldquo;New note&rdquo; to record the first daily care note for your caseload.
                                     </p>
                                 </div>
                             ) : (
                                 <ul className="space-y-4">
-                                    {entries.map((entry) => (
+                                    {sortedEntries.map((entry) => (
                                         <li
                                             key={entry.id}
                                             className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm"
@@ -191,7 +191,7 @@ export default function Journal({ entries = [], patients = [], filter = 'all' })
                                                 <div>
                                                     {entry.patient?.urlKey ? (
                                                         <Link
-                                                            href={route('patients.show', entry.patient.urlKey)}
+                                                            href={route('patients.notes', entry.patient.urlKey)}
                                                             className="font-semibold text-slate-800 hover:text-emerald-700"
                                                         >
                                                             {entry.patient.name}

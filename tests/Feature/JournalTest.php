@@ -14,7 +14,7 @@ class JournalTest extends TestCase
 
     public function test_guest_cannot_access_journal(): void
     {
-        $this->get(route('journal'))->assertRedirect(route('login'));
+        $this->get(route('care-notes'))->assertRedirect(route('login'));
     }
 
     public function test_authenticated_user_can_view_journal_page(): void
@@ -22,7 +22,7 @@ class JournalTest extends TestCase
         $user = User::factory()->create();
 
         $this->actingAs($user)
-            ->get(route('journal'))
+            ->get(route('care-notes'))
             ->assertOk()
             ->assertInertia(fn ($page) => $page->component('Journal'));
     }
@@ -37,18 +37,38 @@ class JournalTest extends TestCase
         ]);
 
         $this->actingAs($user)
-            ->post(route('journal.store'), [
+            ->post(route('care-notes.store'), [
                 'patient_id' => $patient->id,
                 'body' => 'Assisted with morning personal care and hydration.',
                 'filter' => 'all',
             ])
-            ->assertRedirect(route('journal', ['filter' => 'all']));
+            ->assertRedirect(route('care-notes', ['filter' => 'all']));
 
         $this->assertDatabaseHas('care_journal_entries', [
             'patient_id' => $patient->id,
             'author_user_id' => $user->id,
             'body' => 'Assisted with morning personal care and hydration.',
         ]);
+    }
+
+    public function test_journal_store_returns_json_for_api_clients(): void
+    {
+        $user = User::factory()->create();
+        $patient = Patient::query()->create([
+            'url_key' => 'pt-journal-json',
+            'slug' => 'pt-journal-json',
+            'name' => 'JSON Patient',
+        ]);
+
+        $this->actingAs($user)
+            ->postJson(route('care-notes.store'), [
+                'patient_id' => $patient->id,
+                'body' => 'Hydration offered and accepted.',
+                'filter' => 'all',
+            ])
+            ->assertCreated()
+            ->assertJsonPath('success', true)
+            ->assertJsonPath('entry.body', 'Hydration offered and accepted.');
     }
 
     public function test_journal_lists_entries_in_reverse_chronological_order(): void
@@ -75,7 +95,7 @@ class JournalTest extends TestCase
         ]);
 
         $this->actingAs($user)
-            ->get(route('journal'))
+            ->get(route('care-notes'))
             ->assertOk()
             ->assertInertia(fn ($page) => $page
                 ->component('Journal')

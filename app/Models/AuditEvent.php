@@ -4,6 +4,7 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use RuntimeException;
 
 class AuditEvent extends Model
 {
@@ -11,12 +12,12 @@ class AuditEvent extends Model
 
     protected static function booted(): void
     {
-        static::updating(function (): bool {
-            return false;
+        static::updating(function (): never {
+            throw new RuntimeException('Audit log entries are immutable and cannot be modified.');
         });
 
-        static::deleting(function (): bool {
-            return false;
+        static::deleting(function (): never {
+            throw new RuntimeException('Audit log entries are permanent and cannot be deleted.');
         });
     }
 
@@ -29,17 +30,24 @@ class AuditEvent extends Model
         'subject_label',
         'description',
         'changes',
+        'previous_values',
+        'new_values',
         'request_method',
         'request_path',
         'http_status',
         'ip_address',
         'user_agent',
+        'session_id',
+        'device_type',
         'metadata',
+        'integrity_hash',
         'created_at',
     ];
 
     protected $casts = [
         'changes' => 'array',
+        'previous_values' => 'array',
+        'new_values' => 'array',
         'metadata' => 'array',
         'created_at' => 'datetime',
     ];
