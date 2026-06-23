@@ -28,7 +28,7 @@ return new class extends Migration
             $table->timestamps();
 
             $table->unique(['patient_slug', 'plan_slug', 'version_number'], 'cp_versions_patient_plan_version_unique');
-            $table->index(['patient_slug', 'plan_slug', 'recorded_at']);
+            $table->index(['patient_slug', 'plan_slug', 'recorded_at'], 'pcp_ver_slug_recorded_idx');
             $table->index('review_due_at');
         });
 
