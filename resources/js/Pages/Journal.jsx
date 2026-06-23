@@ -87,7 +87,7 @@ export default function Journal({ entries = [], patients = [], filter = 'all' })
                                     </div>
                                     <h1 className="text-2xl font-semibold text-slate-800">Care Notes</h1>
                                     <p className="mt-1 text-sm text-slate-500">
-                                        Organisation-wide care notes — newest entries appear at the top. Open a patient&apos;s Notes tab for structured templates and full history.
+                                        Organisation-wide care notes. Newest entries appear at the top. Open a patient&apos;s Notes tab for structured templates and full history.
                                     </p>
                                 </div>
                                 <button

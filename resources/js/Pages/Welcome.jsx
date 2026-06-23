@@ -78,7 +78,7 @@ function Donut({ total, metrics }) {
             return segment;
         });
 
-    const displayTotal = Number(total || 0);
+    const displayTotal = numericTotal > 0 ? numericTotal : Number(total || 0);
 
     return (
         <div className="relative h-32 w-32">

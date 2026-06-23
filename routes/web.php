@@ -52,6 +52,7 @@ use App\Support\PdfExport;
 use App\Support\ReportPagination;
 use App\Support\Rbac;
 use App\Support\StaffNotifications;
+use App\Support\VisitStatus;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Validation\Rule;
@@ -5168,15 +5169,7 @@ Route::get('/dashboard', function () {
         ->whereBetween('start_at', [$startOfWeek, $endOfWeek])
         ->get();
 
-    $weeklyVisitsTotal = $weeklySchedules->count();
-    $weeklyVisitsCompleted = $weeklySchedules->where('status', 'completed')->count();
-    $weeklyVisitsMissed = $weeklySchedules->where('status', 'missed')->count();
-    $weeklyVisitsInProgress = $weeklySchedules->filter(function ($s) use ($now) {
-        return !$s->status && $s->start_at->lte($now) && $s->end_at->gte($now);
-    })->count();
-    $weeklyVisitsUpcoming = $weeklySchedules->filter(function ($s) use ($now) {
-        return !$s->status && $s->start_at->gt($now);
-    })->count();
+    $visitSummary = VisitStatus::summarize($weeklySchedules, $now);
 
     $weeklyCarePlanUpdates = PatientCarePlanForm::query()
         ->whereBetween('updated_at', [$startOfWeek, $endOfWeek])
@@ -5224,12 +5217,12 @@ Route::get('/dashboard', function () {
         'recentJournalEntries' => $recentJournalEntries,
         'dashboardStats' => [
             'visits' => [
-                'total' => $weeklyVisitsTotal,
+                'total' => $visitSummary['total'],
                 'metrics' => [
-                    'complete' => $weeklyVisitsCompleted,
-                    'inProgress' => $weeklyVisitsInProgress,
-                    'upcoming' => $weeklyVisitsUpcoming,
-                    'missed' => $weeklyVisitsMissed,
+                    'complete' => $visitSummary['complete'],
+                    'inProgress' => $visitSummary['in_progress'],
+                    'upcoming' => $visitSummary['upcoming'],
+                    'missed' => $visitSummary['missed'],
                 ],
             ],
             'tasks' => [
@@ -5272,20 +5265,13 @@ Route::get('/analytics', function () {
         ->with(['patient:id,name,url_key', 'assignedUser:id,name'])
         ->get();
 
-    $visitsTotal = $weeklySchedules->count();
-    $visitsCompleted = $weeklySchedules->where('status', 'completed')->count();
-    $visitsMissed = $weeklySchedules->where('status', 'missed')->count();
-    $visitsInProgress = $weeklySchedules->filter(function (PatientSchedule $schedule) use ($now) {
-        return ! $schedule->status
-            && optional($schedule->start_at)->lte($now)
-            && optional($schedule->end_at)->gte($now);
-    })->count();
-    $visitsUpcoming = $weeklySchedules->filter(function (PatientSchedule $schedule) use ($now) {
-        return ! $schedule->status && optional($schedule->start_at)->gt($now);
-    })->count();
-    $visitsOverdue = $weeklySchedules->filter(function (PatientSchedule $schedule) use ($now) {
-        return ! $schedule->status && optional($schedule->end_at)->lt($now);
-    })->count();
+    $visitSummary = VisitStatus::summarize($weeklySchedules, $now);
+    $visitsTotal = $visitSummary['total'];
+    $visitsCompleted = $visitSummary['completed'];
+    $visitsMissed = $visitSummary['missed'];
+    $visitsInProgress = $visitSummary['in_progress'];
+    $visitsUpcoming = $visitSummary['upcoming'];
+    $visitsOverdue = $visitSummary['overdue'];
 
     $overdueMedicationAlerts = MedicationReminder::query()
         ->where('dismissed', false)
@@ -5306,7 +5292,7 @@ Route::get('/analytics', function () {
     $careAlerts = [
         ['label' => 'Missed medication reminders', 'value' => $overdueMedicationAlerts],
         ['label' => 'Refused / omitted medications today', 'value' => $refusedMedicationAlerts],
-        ['label' => 'Overdue visits pending follow-up', 'value' => $visitsOverdue],
+        ['label' => 'Overdue visits pending follow-up', 'value' => $visitsMissed],
         ['label' => 'High/elevated risk patients', 'value' => $highRiskPatients],
     ];
 
@@ -5319,29 +5305,17 @@ Route::get('/analytics', function () {
                 ->whereBetween('start_at', [$dayStart, $dayEnd])
                 ->get();
 
-            $completed = $daySchedules->where('status', 'completed')->count();
-            $missed = $daySchedules->where('status', 'missed')->count();
-            $inProgress = $daySchedules->filter(function (PatientSchedule $schedule) use ($now) {
-                return ! $schedule->status
-                    && optional($schedule->start_at)->lte($now)
-                    && optional($schedule->end_at)->gte($now);
-            })->count();
-            $upcoming = $daySchedules->filter(function (PatientSchedule $schedule) use ($now) {
-                return ! $schedule->status && optional($schedule->start_at)->gt($now);
-            })->count();
-            $overdue = $daySchedules->filter(function (PatientSchedule $schedule) use ($now) {
-                return ! $schedule->status && optional($schedule->end_at)->lt($now);
-            })->count();
+            $daySummary = VisitStatus::summarize($daySchedules, $now);
 
             return [
                 'label' => $dayStart->format('D d M'),
                 'shortLabel' => $dayStart->format('D'),
-                'total' => $daySchedules->count(),
-                'completed' => $completed,
-                'missed' => $missed,
-                'in_progress' => $inProgress,
-                'upcoming' => $upcoming,
-                'overdue' => $overdue,
+                'total' => $daySummary['total'],
+                'completed' => $daySummary['completed'],
+                'missed' => $daySummary['missed'],
+                'in_progress' => $daySummary['in_progress'],
+                'upcoming' => $daySummary['upcoming'],
+                'overdue' => $daySummary['overdue'],
             ];
         })
         ->values()
@@ -8306,20 +8280,51 @@ Route::get('/patients/{patient}/notes/export.pdf', function (Request $request, s
         ->map(fn (CareJournalEntry $entry) => map_care_journal_entry($entry, $request->user()))
         ->values();
 
-    $filename = 'AlloCare-CareNotes-'.Str::slug($record->name).'-'.now()->format('Ymd').'.pdf';
+    $structuredCount = $entries->where('isStructured', true)->count();
+    $amendedCount = $entries->where('wasAmended', true)->count();
+    $periodLabel = null;
+    if ($entries->isNotEmpty()) {
+        $first = $entries->last()['recordedAtLabel'] ?? null;
+        $last = $entries->first()['recordedAtLabel'] ?? null;
+        if ($first && $last) {
+            $periodLabel = $first === $last ? $first : $first.' to '.$last;
+        }
+    }
+
+    $exportReference = 'CN-'.now()->format('Ymd').'-'.strtoupper(Str::random(6));
+    $generatedAtLabel = now()->format('d M Y, H:i');
+    $filename = 'AlloCare-CareNotes-'.Str::slug($record->name).'-'.$exportReference.'.pdf';
 
     return PdfExport::download($request, 'reports.patient-care-notes-pdf', [
-        'patient' => $record,
+        'patient' => [
+            'name' => $record->name,
+            'reference' => $record->reference,
+            'nhs_number' => $record->nhs_number,
+            'dob' => $record->dob ? Carbon::parse($record->dob)->format('d M Y') : null,
+        ],
         'entries' => $entries,
         'search' => $search,
         'generatedBy' => user_display_name($request->user()) ?? 'System',
+        'generatedAtLabel' => $generatedAtLabel,
+        'exportReference' => $exportReference,
+        'summary' => [
+            'total' => $entries->count(),
+            'structured' => $structuredCount,
+            'general' => $entries->count() - $structuredCount,
+            'amended' => $amendedCount,
+            'periodLabel' => $periodLabel,
+        ],
     ], $filename, [
         'audit' => [
             'description' => 'Exported care notes PDF for '.$record->name,
             'subject_type' => 'care_journal',
             'subject_key' => $record->url_key,
             'subject_label' => $record->name,
-            'metadata' => ['search' => $search !== '' ? $search : null, 'entry_count' => $entries->count()],
+            'metadata' => [
+                'export_reference' => $exportReference,
+                'search' => $search !== '' ? $search : null,
+                'entry_count' => $entries->count(),
+            ],
         ],
     ]);
 })->middleware(['auth', 'verified'])->name('patients.notes.export.pdf');
@@ -11856,13 +11861,14 @@ Route::get('/reports/schedules', function () {
         ->orderByDesc('start_at');
 
     $schedules = (clone $scheduleQuery)->get();
+    $shiftSummary = VisitStatus::summarize($schedules, now());
 
-    $totalShifts = $schedules->count();
-    $completedShifts = $schedules->filter(fn ($s) => $s->status === 'completed')->count();
-    $missedShifts = $schedules->filter(fn ($s) => $s->status === 'missed')->count();
-    $upcomingShifts = $schedules->filter(fn ($s) => $s->start_at->isFuture() && !$s->status)->count();
-    $overdueShifts = $schedules->filter(fn ($s) => $s->end_at->isPast() && !$s->status)->count();
-    $inProgressShifts = $totalShifts - $completedShifts - $missedShifts - $upcomingShifts - $overdueShifts;
+    $totalShifts = $shiftSummary['total'];
+    $completedShifts = $shiftSummary['completed'];
+    $missedShifts = $shiftSummary['missed'];
+    $upcomingShifts = $shiftSummary['upcoming'];
+    $overdueShifts = $shiftSummary['overdue'];
+    $inProgressShifts = $shiftSummary['in_progress'];
     $lateStarts = $schedules->filter(fn ($s) => (int) ($s->late_by_minutes ?? 0) > 0)->count();
     $earlyLeaves = $schedules->filter(fn ($s) => (int) ($s->left_early_by_minutes ?? 0) > 0)->count();
 
@@ -11890,17 +11896,7 @@ Route::get('/reports/schedules', function () {
         ->paginate(ReportPagination::perPage(request()))
         ->withQueryString()
         ->through(function (PatientSchedule $s) {
-            if ($s->status === 'completed') {
-                $displayStatus = 'Completed';
-            } elseif ($s->status === 'missed') {
-                $displayStatus = 'Missed';
-            } elseif ($s->start_at->isFuture()) {
-                $displayStatus = 'Upcoming';
-            } elseif ($s->end_at->isPast()) {
-                $displayStatus = 'Overdue';
-            } else {
-                $displayStatus = 'In Progress';
-            }
+            $displayStatus = VisitStatus::displayLabel(VisitStatus::classify($s));
 
             return [
                 'id' => $s->id,
