@@ -121,7 +121,6 @@ function ToggleChoice({ value, onChange }) {
 export default function ShiftCheckIn({
     patientSlug = 'arthur-henderson',
     initialSnapshot = null,
-    latestVitals = null,
     patientContext = null,
     medicationItems = [],
     visitTasks: initialVisitTasks = [],
@@ -180,6 +179,9 @@ export default function ShiftCheckIn({
     );
     const [visitTasksSaving, setVisitTasksSaving] = useState(false);
     const [visitTasksMessage, setVisitTasksMessage] = useState('');
+    const [vitalsSaving, setVitalsSaving] = useState(false);
+    const [vitalsMessage, setVitalsMessage] = useState('');
+    const [vitalsMessageTone, setVitalsMessageTone] = useState('neutral');
 
     const verifyGps = useCallback(() => {
         if (!navigator.geolocation) {
@@ -220,11 +222,14 @@ export default function ShiftCheckIn({
             { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 }
         );
     }, [patientLat, patientLng]);
-    const [vitals, setVitals] = useState({
-        heartRate: latestVitals?.heartRate ? String(latestVitals.heartRate) : '',
-        bpSystolic: latestVitals?.bpSystolic ? String(latestVitals.bpSystolic) : '',
-        spo2: latestVitals?.spo2 ? String(latestVitals.spo2) : '',
-    });
+    const emptyVitals = {
+        heartRate: '',
+        pulse: '',
+        bpSystolic: '',
+        bpDiastolic: '',
+        spo2: '',
+    };
+    const [vitals, setVitals] = useState(emptyVitals);
 
     useEffect(() => {
         if (!initialSnapshot) return;
@@ -232,13 +237,6 @@ export default function ShiftCheckIn({
         if (initialSnapshot.hoistType) setHoistType(initialSnapshot.hoistType);
         if (initialSnapshot.slingSize) setSlingSize(initialSnapshot.slingSize);
         if (initialSnapshot.signature) setSignature(initialSnapshot.signature);
-        if (initialSnapshot.vitals) {
-            setVitals({
-                heartRate: initialSnapshot.vitals.heartRate ? String(initialSnapshot.vitals.heartRate) : '',
-                bpSystolic: initialSnapshot.vitals.bpSystolic ? String(initialSnapshot.vitals.bpSystolic) : '',
-                spo2: initialSnapshot.vitals.spo2 ? String(initialSnapshot.vitals.spo2) : '',
-            });
-        }
         if (initialSnapshot.sessionStartedAt) setSessionStartedAt(new Date(initialSnapshot.sessionStartedAt));
         if (initialSnapshot.sessionEndedAt) setSessionEndedAt(new Date(initialSnapshot.sessionEndedAt));
         if (initialSnapshot.sessionEndReason) setSessionEndReason(initialSnapshot.sessionEndReason);
@@ -267,23 +265,70 @@ export default function ShiftCheckIn({
         );
     };
 
-    const saveVitals = () => {
-        postWithOfflineQueue(
-            route('patients.vitals.store', patientSlug),
+    const saveVitals = async () => {
+        const heartRate = vitals.heartRate || vitals.pulse;
+        if (!heartRate || !vitals.bpSystolic || !vitals.bpDiastolic || !vitals.spo2) {
+            setVitalsMessageTone('error');
+            setVitalsMessage('Enter BPM/Pulse, BP (systolic/diastolic), and SpO2 before saving.');
+            return;
+        }
+
+        let url;
+        try {
+            url = route('patients.shift-checkin.vitals.store', patientSlug);
+        } catch {
+            url = `/patients/${encodeURIComponent(patientSlug)}/shift-check-in/vitals`;
+        }
+
+        setVitalsSaving(true);
+        setVitalsMessage('');
+        setVitalsMessageTone('neutral');
+
+        const result = await postWithOfflineQueue(
+            url,
             {
-                heart_rate: vitals.heartRate,
-                bp_systolic: vitals.bpSystolic,
-                spo2: vitals.spo2,
+                heart_rate: Number(heartRate),
+                pulse: vitals.pulse ? Number(vitals.pulse) : null,
+                bp_systolic: Number(vitals.bpSystolic),
+                bp_diastolic: Number(vitals.bpDiastolic),
+                spo2: Number(vitals.spo2),
             },
             {
-                onSuccess: () => persistSnapshot({ vitals }),
-                onQueued: () => persistSnapshot({ vitals }),
+                onSuccess: () => {
+                    setVitals(emptyVitals);
+                    persistSnapshot({ vitals: emptyVitals });
+                },
+                onQueued: () => {
+                    setVitals(emptyVitals);
+                    persistSnapshot({ vitals: emptyVitals });
+                    setVitalsMessageTone('neutral');
+                    setVitalsMessage('Saved offline — will sync when connection returns.');
+                },
             }
         );
+
+        setVitalsSaving(false);
+
+        if (result?.queued) {
+            return;
+        }
+
+        if (result?.ok) {
+            setVitalsMessageTone('success');
+            setVitalsMessage('Vitals saved.');
+            return;
+        }
+
+        setVitalsMessageTone('error');
+        setVitalsMessage('Could not save vitals. Please check the values and try again.');
     };
 
     const submitEcmSessionStart = (startedAt) => {
-        postWithOfflineQueue(
+        if (!activeScheduleId) {
+            return Promise.resolve({ ok: false });
+        }
+
+        return postWithOfflineQueue(
             route('patients.shift-checkin.session.start', patientSlug),
             {
                 schedule_id: activeScheduleId,
@@ -387,7 +432,12 @@ export default function ShiftCheckIn({
 
     const completed = Object.values(protocol).filter((value) => value === 'yes').length;
     const gpsReadyForStart = requiresGpsVerification ? gpsStatus === 'verified' : protocol.locationVerification === 'yes';
-    const readyToStart = Object.values(protocol).every((value) => value === 'yes') && signature.trim().length >= 2 && gpsReadyForStart;
+    const hasFullName = signature.trim().split(/\s+/).filter(Boolean).length >= 2;
+    const hasBookedVisit = Boolean(activeScheduleId);
+    const readyToStart = hasBookedVisit
+        && Object.values(protocol).every((value) => value === 'yes')
+        && hasFullName
+        && gpsReadyForStart;
     const hasValidSchedule = scheduledStartAt
         && scheduledEndAt
         && !Number.isNaN(scheduledStartAt.getTime())
@@ -747,32 +797,38 @@ export default function ShiftCheckIn({
                                 <article className="rounded-2xl border border-slate-200 bg-white p-4">
                                     <p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Staff Sign-Off</p>
                                     <p className="mt-1 text-[10px] font-medium uppercase tracking-wide text-slate-400">
-                                        Enter your initials and click Start Session to sign off and begin shift
+                                        Enter your full name and click Start Session to sign off and begin shift
                                     </p>
                                     <input
                                         value={signature}
                                         onChange={(event) => setSignature(event.target.value)}
-                                        placeholder="Digital signature field"
+                                        placeholder="Full name"
                                         className="mt-3 w-full rounded-md border border-slate-200 bg-slate-50 px-2 py-2 text-sm"
                                     />
                                     <button
                                         type="button"
-                                        disabled={!readyToStart || hasShiftStarted}
-                                        onClick={() => {
-                                            if (!hasShiftStarted) {
-                                                const startedAt = new Date();
-                                                setSessionStartedAt(startedAt);
-                                                setSessionEndedAt(null);
-                                                setSessionEndReason('');
-                                                setManualEndReasonInput('');
-                                                setShowManualEndReason(false);
-                                                persistSnapshot({
-                                                    sessionStartedAt: startedAt.toISOString(),
-                                                    sessionEndedAt: null,
-                                                    sessionEndReason: '',
-                                                });
-                                                submitEcmSessionStart(startedAt);
+                                        disabled={!readyToStart || hasShiftStarted || !hasBookedVisit}
+                                        onClick={async () => {
+                                            if (!hasBookedVisit || hasShiftStarted) {
+                                                return;
                                             }
+
+                                            const startedAt = new Date();
+                                            const result = await submitEcmSessionStart(startedAt);
+                                            if (!result?.ok && !result?.queued) {
+                                                return;
+                                            }
+
+                                            setSessionStartedAt(startedAt);
+                                            setSessionEndedAt(null);
+                                            setSessionEndReason('');
+                                            setManualEndReasonInput('');
+                                            setShowManualEndReason(false);
+                                            persistSnapshot({
+                                                sessionStartedAt: startedAt.toISOString(),
+                                                sessionEndedAt: null,
+                                                sessionEndReason: '',
+                                            });
                                         }}
                                         className={`mt-4 w-full rounded-xl px-4 py-3 text-sm font-semibold text-white transition active:scale-[0.98] ${
                                             readyToStart && !hasShiftStarted
@@ -783,7 +839,9 @@ export default function ShiftCheckIn({
                                         {hasShiftStarted ? (isShiftInSession ? 'Shift In Session' : 'Shift Completed') : 'Start Session'}
                                     </button>
                                     <p className="mt-3 text-[11px] text-slate-400">
-                                        {isShiftInSession
+                                        {!hasBookedVisit
+                                            ? 'A booked visit is required before starting check-in.'
+                                            : isShiftInSession
                                             ? 'A shift is currently active. You cannot start another session until this one ends.'
                                             : isShiftClosed
                                                 ? hasShiftEndedManually
@@ -949,29 +1007,71 @@ export default function ShiftCheckIn({
                         <section className="mt-6 rounded-2xl border border-slate-200 bg-white px-4 py-3">
                             <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
                                 <div>
-                                    <label className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">Heart Rate (bpm)</label>
-                                    <input
-                                        type="number"
-                                        min="20"
-                                        max="260"
-                                        value={vitals.heartRate}
-                                        onChange={(event) => setVitals((prev) => ({ ...prev, heartRate: event.target.value }))}
-                                        className="mt-1 w-full rounded-md border border-slate-200 bg-slate-50 px-2 py-2 text-sm"
-                                    />
+                                    <label className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">Heart Rate (BPM/Pulse)</label>
+                                    <div className="mt-1 flex w-full items-center rounded-md border border-slate-200 bg-slate-50 px-2 py-2 text-sm">
+                                        <input
+                                            type="text"
+                                            inputMode="numeric"
+                                            placeholder="__"
+                                            maxLength={3}
+                                            value={vitals.heartRate}
+                                            onChange={(event) => {
+                                                const value = event.target.value.replace(/\D/g, '').slice(0, 3);
+                                                setVitals((prev) => ({ ...prev, heartRate: value }));
+                                            }}
+                                            className="w-10 border-0 bg-transparent p-0 text-center text-sm focus:outline-none focus:ring-0"
+                                            aria-label="Heart rate BPM"
+                                        />
+                                        <span className="shrink-0 font-semibold text-slate-500" aria-hidden="true">/</span>
+                                        <input
+                                            type="text"
+                                            inputMode="numeric"
+                                            placeholder="__"
+                                            maxLength={3}
+                                            value={vitals.pulse}
+                                            onChange={(event) => {
+                                                const value = event.target.value.replace(/\D/g, '').slice(0, 3);
+                                                setVitals((prev) => ({ ...prev, pulse: value }));
+                                            }}
+                                            className="w-10 border-0 bg-transparent p-0 text-center text-sm focus:outline-none focus:ring-0"
+                                            aria-label="Pulse"
+                                        />
+                                    </div>
                                 </div>
                                 <div>
-                                    <label className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">BP (Systolic)</label>
-                                    <input
-                                        type="number"
-                                        min="40"
-                                        max="300"
-                                        value={vitals.bpSystolic}
-                                        onChange={(event) => setVitals((prev) => ({ ...prev, bpSystolic: event.target.value }))}
-                                        className="mt-1 w-full rounded-md border border-slate-200 bg-slate-50 px-2 py-2 text-sm"
-                                    />
+                                    <label className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">BP (Systolic/Diastolic)</label>
+                                    <div className="mt-1 flex w-full items-center rounded-md border border-slate-200 bg-slate-50 px-2 py-2 text-sm">
+                                        <input
+                                            type="text"
+                                            inputMode="numeric"
+                                            placeholder="__"
+                                            maxLength={3}
+                                            value={vitals.bpSystolic}
+                                            onChange={(event) => {
+                                                const value = event.target.value.replace(/\D/g, '').slice(0, 3);
+                                                setVitals((prev) => ({ ...prev, bpSystolic: value }));
+                                            }}
+                                            className="w-10 border-0 bg-transparent p-0 text-center text-sm focus:outline-none focus:ring-0"
+                                            aria-label="Systolic blood pressure"
+                                        />
+                                        <span className="shrink-0 font-semibold text-slate-500" aria-hidden="true">/</span>
+                                        <input
+                                            type="text"
+                                            inputMode="numeric"
+                                            placeholder="__"
+                                            maxLength={3}
+                                            value={vitals.bpDiastolic}
+                                            onChange={(event) => {
+                                                const value = event.target.value.replace(/\D/g, '').slice(0, 3);
+                                                setVitals((prev) => ({ ...prev, bpDiastolic: value }));
+                                            }}
+                                            className="w-10 border-0 bg-transparent p-0 text-center text-sm focus:outline-none focus:ring-0"
+                                            aria-label="Diastolic blood pressure"
+                                        />
+                                    </div>
                                 </div>
                                 <div>
-                                    <label className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">SpO2 (%)</label>
+                                    <label className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">SpO2 (Oxygen Saturation)</label>
                                     <input
                                         type="number"
                                         min="50"
@@ -982,13 +1082,31 @@ export default function ShiftCheckIn({
                                     />
                                 </div>
                             </div>
-                            <div className="mt-3 flex justify-end">
+                            <div className="mt-3 flex flex-wrap items-center justify-end gap-3">
+                                {vitalsMessage && (
+                                    <p
+                                        className={`text-xs font-semibold ${
+                                            vitalsMessageTone === 'success'
+                                                ? 'text-emerald-700'
+                                                : vitalsMessageTone === 'error'
+                                                    ? 'text-rose-700'
+                                                    : 'text-slate-600'
+                                        }`}
+                                    >
+                                        {vitalsMessage}
+                                    </p>
+                                )}
                                 <button
                                     type="button"
                                     onClick={saveVitals}
-                                    className="rounded-lg bg-slate-900 px-4 py-2 text-xs font-semibold text-white transition hover:bg-slate-800"
+                                    disabled={vitalsSaving}
+                                    className={`rounded-lg px-4 py-2 text-xs font-semibold text-white transition ${
+                                        vitalsSaving
+                                            ? 'cursor-not-allowed bg-slate-400'
+                                            : 'bg-slate-900 hover:bg-slate-800'
+                                    }`}
                                 >
-                                    Save Vitals
+                                    {vitalsSaving ? 'Saving…' : 'Save Vitals'}
                                 </button>
                             </div>
                         </section>

@@ -19,7 +19,7 @@ function badgeClasses(status) {
     }
 
     if (status === 'AMBER') {
-        return 'bg-amber-100 text-amber-700';
+        return 'bg-[#FFD60A] text-[#5B4400]';
     }
 
     return 'bg-slate-200 text-slate-600';
@@ -154,20 +154,20 @@ export default function Patients({ patients: dbPatients = [], canRegisterPatient
                                     )}
                                 </div>
                             ) : (
-                            <section className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
+                            <section className="grid grid-cols-1 items-stretch gap-4 md:grid-cols-2 xl:grid-cols-3">
                                 {paginatedPatients.map((patient) => (
                                     <article
                                         key={patient.reference}
-                                        className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-[0_1px_2px_rgba(15,23,42,0.06)]"
+                                        className="flex h-full flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-[0_1px_2px_rgba(15,23,42,0.06)]"
                                     >
-                                        <div className="p-5">
-                                            <div className="mb-4 flex items-start justify-between">
+                                        <div className="flex flex-1 flex-col p-5">
+                                            <div className="mb-4 flex items-start justify-between gap-3">
                                                 {patient.photoUrl ? (
-                                                    <img src={patient.photoUrl} alt={`${patient.name} avatar`} className="h-16 w-16 rounded-xl object-cover" />
+                                                    <img src={patient.photoUrl} alt={`${patient.name} avatar`} className="h-16 w-16 shrink-0 rounded-xl object-cover" />
                                                 ) : (
-                                                    <div className={`h-16 w-16 rounded-xl ${patient.avatar}`} />
+                                                    <div className={`h-16 w-16 shrink-0 rounded-xl ${patient.avatar}`} />
                                                 )}
-                                                <div className="space-y-2 text-right">
+                                                <div className="min-h-[5.5rem] space-y-2 text-right">
                                                     <span
                                                         className={`inline-block rounded-full px-3 py-1 text-[10px] font-semibold tracking-wide ${badgeClasses(patient.ragStatus)}`}
                                                     >
@@ -189,16 +189,18 @@ export default function Patients({ patients: dbPatients = [], canRegisterPatient
                                                 </div>
                                             </div>
 
-                                            <h2 className="mb-1 text-3xl font-semibold leading-tight text-slate-900">{patient.name}</h2>
+                                            <h2 className="mb-1 line-clamp-2 min-h-[2.5rem] text-2xl font-semibold leading-tight text-slate-900">
+                                                {patient.name}
+                                            </h2>
                                             <p className="mb-4 text-xs font-medium uppercase tracking-wide text-slate-400">ID: {patient.reference}</p>
 
-                                            <div className="space-y-3 text-sm text-slate-600">
-                                                <p>{patient.address}</p>
-                                                <p>{patient.phone}</p>
+                                            <div className="mt-auto space-y-2 text-sm text-slate-600">
+                                                <p className="line-clamp-2 min-h-[2.5rem]">{patient.address || 'Address not provided'}</p>
+                                                <p className="truncate">{patient.phone || 'Not provided'}</p>
                                             </div>
                                         </div>
 
-                                        <div className="border-t border-slate-100 px-5 py-4">
+                                        <div className="mt-auto border-t border-slate-100 px-5 py-4">
                                             <Link href={route('patients.show', patient.urlKey)} className="text-sm font-semibold text-emerald-700">
                                                 View Medical Record
                                             </Link>

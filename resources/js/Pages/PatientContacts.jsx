@@ -187,7 +187,7 @@ export default function PatientContacts({
     const ragBadgeClass = urgentTag === 'GREEN'
         ? 'bg-emerald-100 text-emerald-700'
         : urgentTag === 'AMBER'
-            ? 'bg-amber-100 text-amber-700'
+            ? 'bg-[#FFD60A] text-[#5B4400]'
             : urgentTag === 'RED'
                 ? 'bg-rose-100 text-rose-700'
                 : 'bg-slate-200 text-slate-700';

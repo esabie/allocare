@@ -13,6 +13,7 @@ class PatientVital extends Model
     protected $fillable = [
         'patient_id',
         'heart_rate',
+        'pulse',
         'respiration_rate',
         'bp_systolic',
         'bp_diastolic',

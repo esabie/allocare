@@ -306,6 +306,40 @@ function resolve_patient_schedule_for_ecm(Patient $patient, ?int $scheduleId = n
         ->first();
 }
 
+/**
+ * A visit that staff may open/start check-in for:
+ * - not completed/missed
+ * - still within the visit window (end_at >= now)
+ * - starting within the early check-in grace period (default 60 minutes)
+ */
+function resolve_eligible_checkin_schedule(
+    Patient $patient,
+    ?int $scheduleId = null,
+    ?Carbon $now = null,
+    int $earlyMinutes = 60
+): ?PatientSchedule {
+    $now ??= now();
+    $latestStartAllowed = $now->copy()->addMinutes(max(0, $earlyMinutes));
+
+    $query = PatientSchedule::query()
+        ->where('patient_id', $patient->id)
+        ->where(function ($builder) {
+            $builder->whereNull('status')
+                ->orWhereNotIn('status', ['completed', 'missed']);
+        })
+        ->where('end_at', '>=', $now)
+        ->where('start_at', '<=', $latestStartAllowed);
+
+    if ($scheduleId !== null) {
+        return (clone $query)->where('id', $scheduleId)->first();
+    }
+
+    return $query
+        ->get()
+        ->sortBy(fn (PatientSchedule $schedule) => abs($schedule->start_at?->diffInSeconds($now) ?? PHP_INT_MAX))
+        ->first();
+}
+
 function ecm_distance_metres(?float $fromLat, ?float $fromLng, ?float $toLat, ?float $toLng): ?int
 {
     if ($fromLat === null || $fromLng === null || $toLat === null || $toLng === null) {
@@ -6194,6 +6228,7 @@ function map_patient_vital(PatientVital $vital): array
     return [
         'id' => $vital->id,
         'heartRate' => $vital->heart_rate,
+        'pulse' => $vital->pulse,
         'respirationRate' => $vital->respiration_rate,
         'bpSystolic' => $vital->bp_systolic,
         'bpDiastolic' => $vital->bp_diastolic,
@@ -7521,17 +7556,21 @@ Route::get('/patients/{patient}', function (string $patient) {
 
     $authUser = request()->user();
     $canEditProfile = user_has_primary_role($authUser, ['super_admin', 'admin', 'care_manager']);
+    $checkInSchedule = resolve_eligible_checkin_schedule($record);
 
     return Inertia::render('PatientRecord', [
         'patientSlug' => $patient,
         'patient' => map_patient_profile_payload($record),
         'canEditProfile' => $canEditProfile,
+        'canCheckIn' => $checkInSchedule !== null,
         'careGroups' => \App\Support\PatientRegistration::careGroups(),
         'careGroupHistory' => map_patient_care_group_history($record),
         'recentJournalEntries' => $recentJournalEntries,
         'latestVitals' => $latestVitals ? [
             'heartRate' => $latestVitals->heart_rate,
+            'pulse' => $latestVitals->pulse,
             'bpSystolic' => $latestVitals->bp_systolic,
+            'bpDiastolic' => $latestVitals->bp_diastolic,
             'spo2' => $latestVitals->spo2,
             'recordedAt' => optional($latestVitals->recorded_at ?? $latestVitals->created_at)->toIso8601String(),
         ] : null,
@@ -7592,6 +7631,7 @@ Route::patch('/patients/{patient}/profile', function (Request $request, string $
         'nhs_number' => ['nullable', 'string', 'regex:/^\d{10}$/', 'unique:patients,nhs_number,'.$record->id],
         'email' => ['nullable', 'email', 'max:255'],
         'phone' => ['nullable', 'string', 'max:50'],
+        'address' => ['nullable', 'string', 'max:1000'],
         'weight_kg' => ['nullable', 'numeric', 'between:1,500'],
         'height_m' => ['nullable', 'numeric', 'between:0.3,3'],
     ]);
@@ -7627,6 +7667,7 @@ Route::patch('/patients/{patient}/profile', function (Request $request, string $
         'social_services_number',
         'email',
         'phone',
+        'address',
     ];
 
     $contactFields = [
@@ -7689,6 +7730,37 @@ Route::patch('/patients/{patient}/profile', function (Request $request, string $
     if (array_key_exists('height_m', $validated)) {
         $before['height_m'] = $record->height_m;
         $updates['height_m'] = $validated['height_m'] ?? null;
+    }
+
+    if (array_key_exists('address', $updates) && ($updates['address'] ?? null) !== $record->address) {
+        $before['latitude'] = $record->latitude;
+        $before['longitude'] = $record->longitude;
+
+        $nextAddress = $updates['address'] ?? null;
+        $geocodedLatitude = null;
+        $geocodedLongitude = null;
+
+        if (is_string($nextAddress) && trim($nextAddress) !== '') {
+            try {
+                $geoResponse = Http::timeout(5)
+                    ->withHeaders(['User-Agent' => 'AlloCare/1.0'])
+                    ->get('https://nominatim.openstreetmap.org/search', [
+                        'q' => $nextAddress,
+                        'format' => 'json',
+                        'limit' => 1,
+                        'countrycodes' => 'gb',
+                    ]);
+                if ($geoResponse->ok() && ! empty($geoResponse->json())) {
+                    $geocodedLatitude = (float) $geoResponse->json()[0]['lat'];
+                    $geocodedLongitude = (float) $geoResponse->json()[0]['lon'];
+                }
+            } catch (\Throwable $e) {
+                // Geocoding is best-effort; keep address update even if lookup fails.
+            }
+        }
+
+        $updates['latitude'] = $geocodedLatitude;
+        $updates['longitude'] = $geocodedLongitude;
     }
 
     if ($updates === []) {
@@ -10418,17 +10490,19 @@ Route::get('/patients/{patient}/incidents/create', function (string $patient) {
 Route::get('/patients/{patient}/shift-check-in', function (string $patient) {
     $snapshot = FormSnapshot::query()->where('form_key', "shift-checkin:{$patient}")->first();
     $patientRecord = Patient::query()->where('url_key', $patient)->firstOrFail();
+    $activeVisit = resolve_eligible_checkin_schedule($patientRecord);
+
+    if (! $activeVisit) {
+        return redirect()
+            ->route('patients.show', $patient)
+            ->with('error', 'Check-in requires an active or upcoming booked visit. Create a schedule first.');
+    }
+
     $latestVitals = PatientVital::query()
         ->where('patient_id', $patientRecord->id)
         ->latest('recorded_at')
         ->latest('id')
         ->first();
-    $nextVisit = PatientSchedule::query()
-        ->where('patient_id', $patientRecord->id)
-        ->where('end_at', '>=', now())
-        ->orderBy('start_at')
-        ->first();
-    $activeVisit = resolve_patient_schedule_for_ecm($patientRecord, null);
     $medicationItems = PatientMedication::query()
         ->where('patient_id', $patientRecord->id)
         ->where('active', true)
@@ -10460,7 +10534,7 @@ Route::get('/patients/{patient}/shift-check-in', function (string $patient) {
         $highRiskFlags[] = 'RAG Amber - Monitor closely during visit.';
     }
 
-    $visitTasks = $activeVisit ? load_schedule_visit_tasks($activeVisit) : [];
+    $visitTasks = load_schedule_visit_tasks($activeVisit);
 
     return Inertia::render('ShiftCheckIn', [
         'patientSlug' => $patient,
@@ -10471,22 +10545,78 @@ Route::get('/patients/{patient}/shift-check-in', function (string $patient) {
             'location' => $patientRecord->address ?: 'Location not provided',
             'latitude' => $patientRecord->latitude ? (float) $patientRecord->latitude : null,
             'longitude' => $patientRecord->longitude ? (float) $patientRecord->longitude : null,
-            'scheduledStartAt' => $nextVisit?->start_at?->toIso8601String(),
-            'scheduledEndAt' => $nextVisit?->end_at?->toIso8601String(),
-            'scheduledWindow' => $nextVisit
-                ? optional($nextVisit->start_at)->format('H:i').' - '.optional($nextVisit->end_at)->format('H:i')
-                : 'Not scheduled',
-            'activeScheduleId' => $activeVisit?->id,
+            'scheduledStartAt' => $activeVisit->start_at?->toIso8601String(),
+            'scheduledEndAt' => $activeVisit->end_at?->toIso8601String(),
+            'scheduledWindow' => optional($activeVisit->start_at)->format('H:i').' - '.optional($activeVisit->end_at)->format('H:i'),
+            'activeScheduleId' => $activeVisit->id,
             'highRiskFlags' => !empty($highRiskFlags) ? $highRiskFlags : ['No high-risk flags recorded.'],
         ],
         'medicationItems' => $medicationItems,
         'latestVitals' => $latestVitals ? [
             'heartRate' => $latestVitals->heart_rate,
             'bpSystolic' => $latestVitals->bp_systolic,
+            'bpDiastolic' => $latestVitals->bp_diastolic,
             'spo2' => $latestVitals->spo2,
         ] : null,
     ]);
 })->middleware(['auth', 'verified'])->name('patients.shift-checkin');
+
+Route::post('/patients/{patient}/shift-check-in/vitals', function (string $patient) {
+    $patientRecord = Patient::query()->where('url_key', $patient)->firstOrFail();
+    $payload = request()->validate([
+        'heart_rate' => ['required', 'integer', 'between:20,260'],
+        'pulse' => ['nullable', 'integer', 'between:20,260'],
+        'bp_systolic' => ['required', 'integer', 'between:40,300'],
+        'bp_diastolic' => ['required', 'integer', 'between:40,200'],
+        'spo2' => ['required', 'integer', 'between:50,100'],
+    ]);
+
+    $vital = PatientVital::query()->create([
+        'patient_id' => $patientRecord->id,
+        'heart_rate' => (int) $payload['heart_rate'],
+        'pulse' => isset($payload['pulse']) ? (int) $payload['pulse'] : null,
+        'bp_systolic' => (int) $payload['bp_systolic'],
+        'bp_diastolic' => (int) $payload['bp_diastolic'],
+        'spo2' => (int) $payload['spo2'],
+        'supplemental_oxygen' => false,
+        'recorded_at' => now(),
+        'recorded_by_user_id' => request()->user()?->id,
+    ]);
+
+    $thresholdAlerts = evaluate_vital_threshold_alerts($vital);
+
+    AuditTrail::record(
+        'created',
+        'Recorded shift check-in vitals for '.$patientRecord->name,
+        'vital',
+        (string) $vital->id,
+        $patientRecord->name,
+        [
+            'heart_rate' => $vital->heart_rate,
+            'pulse' => $vital->pulse,
+            'bp_systolic' => $vital->bp_systolic,
+            'bp_diastolic' => $vital->bp_diastolic,
+            'spo2' => $vital->spo2,
+            'threshold_alerts' => $thresholdAlerts,
+        ],
+        ['patient_url_key' => $patient],
+    );
+
+    $flashMessage = 'Vitals saved.';
+    if (!empty($thresholdAlerts)) {
+        $flashMessage .= ' '.implode(' ', array_slice($thresholdAlerts, 0, 2));
+    }
+
+    if (request()->expectsJson() || request()->ajax()) {
+        return response()->json([
+            'ok' => true,
+            'message' => $flashMessage,
+            'vital_id' => $vital->id,
+        ]);
+    }
+
+    return redirect()->back()->with('success', $flashMessage);
+})->middleware(['auth', 'verified', 'role:super_admin,admin,care_manager,supervisor,care_worker'])->name('patients.shift-checkin.vitals.store');
 
 Route::post('/patients/{patient}/shift-check-in/session/start', function (string $patient) {
     $patientRecord = Patient::query()->where('url_key', $patient)->firstOrFail();
@@ -10497,10 +10627,13 @@ Route::post('/patients/{patient}/shift-check-in/session/start', function (string
         'gps_longitude' => ['nullable', 'numeric', 'between:-180,180'],
     ]);
 
-    $schedule = resolve_patient_schedule_for_ecm($patientRecord, isset($payload['schedule_id']) ? (int) $payload['schedule_id'] : null);
+    $schedule = resolve_eligible_checkin_schedule(
+        $patientRecord,
+        isset($payload['schedule_id']) ? (int) $payload['schedule_id'] : null
+    );
 
     if (!$schedule) {
-        return response()->json(['ok' => false, 'message' => 'No schedule found for this patient.'], 422);
+        return response()->json(['ok' => false, 'message' => 'No eligible booked visit found for check-in. Create a schedule first.'], 422);
     }
 
     $startedAt = isset($payload['started_at']) ? Carbon::parse((string) $payload['started_at']) : now();

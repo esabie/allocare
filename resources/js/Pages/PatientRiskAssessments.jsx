@@ -5,7 +5,7 @@ import ProfileMenu from '@/Components/ProfileMenu';
 
 const levelClass = {
     red: 'bg-rose-100 text-rose-700',
-    amber: 'bg-amber-100 text-amber-700',
+    amber: 'bg-[#FFD60A] text-[#5B4400]',
     green: 'bg-emerald-100 text-emerald-700',
 };
 

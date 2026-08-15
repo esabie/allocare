@@ -1,5 +1,5 @@
 import { Head, Link, useForm, usePage } from '@inertiajs/react';
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { routerPatchWithOffline } from '@/utils/offlineQueue';
 import PatientRecordSidebar from '@/Components/PatientRecordSidebar';
 import AppHeaderNav from '@/Components/AppHeaderNav';
@@ -30,6 +30,7 @@ export default function PatientRecord({
     nextVisit = null,
     medicationStatus = null,
     canEditProfile = false,
+    canCheckIn = false,
     careGroups = [],
     careGroupHistory = [],
     recentJournalEntries = [],
@@ -41,6 +42,7 @@ export default function PatientRecord({
     const [showLifecycleUpdate, setShowLifecycleUpdate] = useState(false);
     const [showCareGroupUpdate, setShowCareGroupUpdate] = useState(false);
     const [showProfileEdit, setShowProfileEdit] = useState(false);
+    const profileEditRef = useRef(null);
     const [newRag, setNewRag] = useState(() => {
         const raw = String(patient?.ragStatusLabel || patient?.ragStatus || 'GREEN').toUpperCase();
         return ['GREEN', 'AMBER', 'RED'].includes(raw) ? raw : 'GREEN';
@@ -49,6 +51,14 @@ export default function PatientRecord({
     const [newCareGroup, setNewCareGroup] = useState(() => patient?.careGroup || '');
     const [careGroupReason, setCareGroupReason] = useState('');
     const [queueMessage, setQueueMessage] = useState('');
+    const [alertsPage, setAlertsPage] = useState(0);
+    const alertsPerPage = 2;
+    const alertsTotalPages = Math.max(1, Math.ceil(activeAlerts.length / alertsPerPage));
+    const safeAlertsPage = Math.min(alertsPage, alertsTotalPages - 1);
+    const paginatedAlerts = activeAlerts.slice(
+        safeAlertsPage * alertsPerPage,
+        safeAlertsPage * alertsPerPage + alertsPerPage
+    );
 
     const allergyDetails = Array.isArray(patient?.allergyDetails) && patient.allergyDetails.length
         ? patient.allergyDetails
@@ -90,6 +100,7 @@ export default function PatientRecord({
         nhs_number: patient?.nhsNumber || '',
         email: patient?.email || '',
         phone: patient?.phone || '',
+        address: patient?.address || '',
         weight_kg: patient?.weightKg ? String(patient.weightKg) : '',
         height_m: patient?.heightM ? String(patient.heightM) : '',
     });
@@ -116,15 +127,36 @@ export default function PatientRecord({
     const ragBadgeClass = patientRagStatus.toLowerCase() === 'green'
         ? 'bg-emerald-100 text-emerald-800'
         : patientRagStatus.toLowerCase() === 'amber'
-            ? 'bg-amber-100 text-amber-800'
+            ? 'bg-[#FFD60A] text-[#5B4400]'
             : patientRagStatus.toLowerCase() === 'red'
                 ? 'bg-rose-100 text-rose-800'
                 : 'bg-slate-200 text-slate-700';
 
+    const formatPairedVital = (primary, secondary) => {
+        if (primary == null && secondary == null) return '--';
+        if (primary != null && secondary != null) return `${primary}/${secondary}`;
+        return String(primary ?? secondary);
+    };
+
     const vitals = [
-        { label: 'Heart Rate', value: latestVitals?.heartRate ?? '--', unit: 'bpm', color: 'text-slate-800' },
-        { label: 'BP (Systolic)', value: latestVitals?.bpSystolic ?? '--', unit: 'mmHg', color: 'text-rose-600' },
-        { label: 'SPO2', value: latestVitals?.spo2 ?? '--', unit: '%', color: 'text-emerald-600' },
+        {
+            label: 'Heart Rate (BPM/Pulse)',
+            value: formatPairedVital(latestVitals?.heartRate, latestVitals?.pulse),
+            unit: 'bpm',
+            color: 'text-slate-800',
+        },
+        {
+            label: 'BP (Systolic/Diastolic)',
+            value: formatPairedVital(latestVitals?.bpSystolic, latestVitals?.bpDiastolic),
+            unit: 'mmHg',
+            color: 'text-rose-600',
+        },
+        {
+            label: 'SPO2',
+            value: latestVitals?.spo2 ?? '--',
+            unit: '%',
+            color: 'text-emerald-600',
+        },
     ];
 
     const nextVisitStart = nextVisit?.startAt ? new Date(nextVisit.startAt) : null;
@@ -146,6 +178,14 @@ export default function PatientRecord({
         reset();
         setShowProfileEdit(true);
     };
+
+    useEffect(() => {
+        if (!showProfileEdit || !profileEditRef.current) {
+            return;
+        }
+
+        profileEditRef.current.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }, [showProfileEdit]);
 
     const submitProfile = async (event) => {
         event.preventDefault();
@@ -191,9 +231,26 @@ export default function PatientRecord({
                                 <Link href={route('patients.incidents.create', patientSlug)} className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-600">
                                     Report an incident
                                 </Link>
-                                <Link href={route('patients.shift-checkin', patientSlug)} className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white">
-                                    Check in
-                                </Link>
+                                {canCheckIn ? (
+                                    <Link href={route('patients.shift-checkin', patientSlug)} className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white">
+                                        Check in
+                                    </Link>
+                                ) : nextVisit ? (
+                                    <span
+                                        title="Check-in opens up to 60 minutes before the booked visit starts"
+                                        className="rounded-xl border border-slate-300 bg-slate-100 px-4 py-2 text-sm font-semibold text-slate-500"
+                                    >
+                                        Check in opens nearer visit
+                                    </span>
+                                ) : (
+                                    <Link
+                                        href={route('schedules')}
+                                        title="Create a booked visit before checking in"
+                                        className="rounded-xl border border-slate-300 bg-slate-100 px-4 py-2 text-sm font-semibold text-slate-500"
+                                    >
+                                        Book visit to check in
+                                    </Link>
+                                )}
                                 <ProfileMenu />
                             </div>
                         </header>
@@ -201,6 +258,12 @@ export default function PatientRecord({
                         {(flash?.success || queueMessage) && (
                             <div className="mb-4 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-medium text-emerald-800">
                                 {queueMessage || flash.success}
+                            </div>
+                        )}
+
+                        {flash?.error && (
+                            <div className="mb-4 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-medium text-rose-800">
+                                {flash.error}
                             </div>
                         )}
 
@@ -285,13 +348,24 @@ export default function PatientRecord({
                         </section>
 
                         {showProfileEdit && canEditProfile && (
-                            <section className="mb-4 rounded-2xl border border-slate-200 bg-white p-5">
+                            <section
+                                ref={profileEditRef}
+                                id="edit-clinical-profile"
+                                className="mb-4 scroll-mt-6 rounded-2xl border border-slate-200 bg-white p-5"
+                            >
                                 <h2 className="mb-4 text-xl font-semibold text-slate-900">Edit clinical profile</h2>
                                 <form onSubmit={submitProfile} className="space-y-4">
                                     <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
                                         <input value={data.nhs_number} onChange={(e) => setData('nhs_number', e.target.value)} placeholder="NHS number (10 digits)" className="rounded-lg border border-slate-200 px-3 py-2 text-sm" />
                                         <input type="email" value={data.email} onChange={(e) => setData('email', e.target.value)} placeholder="Email address" className="rounded-lg border border-slate-200 px-3 py-2 text-sm" />
                                         <input value={data.phone} onChange={(e) => setData('phone', e.target.value)} placeholder="Phone number" className="rounded-lg border border-slate-200 px-3 py-2 text-sm" />
+                                        <textarea
+                                            value={data.address}
+                                            onChange={(e) => setData('address', e.target.value)}
+                                            placeholder="Home address"
+                                            rows={2}
+                                            className="rounded-lg border border-slate-200 px-3 py-2 text-sm md:col-span-2"
+                                        />
                                         <input type="number" min="1" max="500" step="0.1" value={data.weight_kg} onChange={(e) => setData('weight_kg', e.target.value)} placeholder="Weight (kg)" className="rounded-lg border border-slate-200 px-3 py-2 text-sm" />
                                         <input type="number" min="0.3" max="3" step="0.01" value={data.height_m} onChange={(e) => setData('height_m', e.target.value)} placeholder="Height (m)" className="rounded-lg border border-slate-200 px-3 py-2 text-sm" />
                                         <input value={data.preferred_name} onChange={(e) => setData('preferred_name', e.target.value)} placeholder="Preferred name" className="rounded-lg border border-slate-200 px-3 py-2 text-sm" />
@@ -571,7 +645,7 @@ export default function PatientRecord({
                                                     onClick={() => setNewRag(rag)}
                                                     className={`rounded-full px-4 py-1.5 text-xs font-semibold transition ${
                                                         newRag === rag
-                                                            ? rag === 'GREEN' ? 'bg-emerald-600 text-white' : rag === 'AMBER' ? 'bg-amber-500 text-white' : 'bg-red-600 text-white'
+                                                            ? rag === 'GREEN' ? 'bg-emerald-600 text-white' : rag === 'AMBER' ? 'bg-[#FFD60A] text-[#5B4400]' : 'bg-red-600 text-white'
                                                             : 'bg-white border border-slate-200 text-slate-600 hover:bg-slate-100'
                                                     }`}
                                                 >
@@ -621,17 +695,47 @@ export default function PatientRecord({
                                 <p className="mt-3 text-xs text-slate-500">Risk assessments are not yet recorded in the system.</p>
                             </article>
 
-                            <article className="rounded-2xl bg-rose-600 p-5 text-white">
-                                <h2 className="mb-3 text-2xl font-semibold">Active Alerts</h2>
-                                <ul className="space-y-2 text-sm">
-                                    {activeAlerts.length > 0 ? (
-                                        activeAlerts.map((alert, index) => (
-                                            <li key={`${alert}-${index}`} className="rounded-lg bg-white/10 p-3">{alert}</li>
+                            <article className="flex h-full flex-col self-start rounded-2xl bg-rose-600 p-5 text-white">
+                                <div className="mb-3 flex items-start justify-between gap-3">
+                                    <h2 className="text-2xl font-semibold">Active Alerts</h2>
+                                    {activeAlerts.length > 0 && (
+                                        <span className="rounded-full bg-white/15 px-2.5 py-1 text-[11px] font-semibold">
+                                            {activeAlerts.length}
+                                        </span>
+                                    )}
+                                </div>
+                                <ul className="min-h-[6.5rem] space-y-2 text-sm">
+                                    {paginatedAlerts.length > 0 ? (
+                                        paginatedAlerts.map((alert, index) => (
+                                            <li key={`${safeAlertsPage}-${alert}-${index}`} className="rounded-lg bg-white/10 p-3">{alert}</li>
                                         ))
                                     ) : (
                                         <li className="rounded-lg bg-white/10 p-3">No active alerts.</li>
                                     )}
                                 </ul>
+                                {activeAlerts.length > alertsPerPage && (
+                                    <div className="mt-4 flex items-center justify-between gap-2 border-t border-white/20 pt-3">
+                                        <button
+                                            type="button"
+                                            onClick={() => setAlertsPage((page) => Math.max(0, page - 1))}
+                                            disabled={safeAlertsPage === 0}
+                                            className="rounded-lg bg-white/10 px-3 py-1.5 text-xs font-semibold transition hover:bg-white/20 disabled:cursor-not-allowed disabled:opacity-40"
+                                        >
+                                            Previous
+                                        </button>
+                                        <p className="text-[11px] font-semibold uppercase tracking-wide text-white/80">
+                                            Page {safeAlertsPage + 1} of {alertsTotalPages}
+                                        </p>
+                                        <button
+                                            type="button"
+                                            onClick={() => setAlertsPage((page) => Math.min(alertsTotalPages - 1, page + 1))}
+                                            disabled={safeAlertsPage >= alertsTotalPages - 1}
+                                            className="rounded-lg bg-white/10 px-3 py-1.5 text-xs font-semibold transition hover:bg-white/20 disabled:cursor-not-allowed disabled:opacity-40"
+                                        >
+                                            Next
+                                        </button>
+                                    </div>
+                                )}
                             </article>
                         </section>
 
