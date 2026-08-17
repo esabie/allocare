@@ -12,6 +12,7 @@ class CareJournalEntry extends Model
         'author_user_id',
         'amended_by_user_id',
         'body',
+        'shift_type',
         'template_slug',
         'structured_data',
         'outcome_status',

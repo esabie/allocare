@@ -1,8 +1,11 @@
 import { Head, Link, usePage } from '@inertiajs/react';
+import { useState } from 'react';
 import AppHeaderNav from '@/Components/AppHeaderNav';
+import CareAlertAction from '@/Components/CareAlertAction';
+import CareNoteDetailModal from '@/Components/CareNoteDetailModal';
+import CareNoteListItem from '@/Components/CareNoteListItem';
 import DashboardSidebar from '@/Components/DashboardSidebar';
 import ProfileMenu from '@/Components/ProfileMenu';
-import CareAlertAction from '@/Components/CareAlertAction';
 
 const statCards = [
     {
@@ -128,6 +131,7 @@ function Donut({ total, metrics }) {
 export default function Welcome() {
     const dashboardStats = usePage().props?.dashboardStats || {};
     const recentJournalEntries = usePage().props?.recentJournalEntries || [];
+    const [selectedCareNote, setSelectedCareNote] = useState(null);
 
     const cards = [
         {
@@ -238,24 +242,26 @@ export default function Welcome() {
                                         </p>
                                     </div>
                                 ) : (
-                                    <ul className="space-y-3">
-                                        {recentJournalEntries.map((entry) => (
-                                            <li key={entry.id} className="rounded-xl border border-slate-200 p-4">
-                                                <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
-                                                    <p className="font-semibold text-slate-800">{entry.patient?.name}</p>
-                                                    <time dateTime={entry.recordedAt} className="text-xs text-slate-500">
-                                                        {entry.recordedAtLabel}
-                                                    </time>
-                                                </div>
-                                                <p className="line-clamp-2 text-sm text-slate-600">{entry.body}</p>
+                                    <>
+                                        <ul className="space-y-3">
+                                            {recentJournalEntries.map((entry) => (
+                                                <CareNoteListItem
+                                                    key={entry.id}
+                                                    entry={entry}
+                                                    onSelect={setSelectedCareNote}
+                                                />
+                                            ))}
+                                            <li>
+                                                <Link href={route('care-notes')} className="text-sm font-semibold text-emerald-700 hover:text-emerald-800">
+                                                    Open all care notes →
+                                                </Link>
                                             </li>
-                                        ))}
-                                        <li>
-                                            <Link href={route('care-notes')} className="text-sm font-semibold text-emerald-700 hover:text-emerald-800">
-                                                Open all care notes →
-                                            </Link>
-                                        </li>
-                                    </ul>
+                                        </ul>
+                                        <CareNoteDetailModal
+                                            entry={selectedCareNote}
+                                            onClose={() => setSelectedCareNote(null)}
+                                        />
+                                    </>
                                 )}
                             </article>
 

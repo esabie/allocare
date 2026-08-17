@@ -38,7 +38,14 @@ class OfflinePatientWritesTest extends TestCase
         $this->actingAs($user)
             ->postJson(route('care-notes.store'), [
                 'patient_id' => $patient->id,
-                'body' => 'Care note recorded while offline',
+                'shift_type' => 'day',
+                'log_date' => now()->toDateString(),
+                'structured_data' => [
+                    'slots' => [
+                        '07_08' => ['initials' => 'EO', 'notes' => 'Care note recorded while offline'],
+                    ],
+                    'incident' => 'no',
+                ],
                 'filter' => 'all',
             ])
             ->assertCreated()
@@ -47,8 +54,11 @@ class OfflinePatientWritesTest extends TestCase
         $this->assertDatabaseHas('care_journal_entries', [
             'patient_id' => $patient->id,
             'author_user_id' => $user->id,
-            'body' => 'Care note recorded while offline',
+            'template_slug' => 'daily_support_care_log',
+            'shift_type' => 'day',
         ]);
+        $entry = CareJournalEntry::query()->first();
+        $this->assertStringContainsString('Care note recorded while offline', $entry->body);
         $this->assertSame(1, CareJournalEntry::query()->count());
     }
 
@@ -65,7 +75,8 @@ class OfflinePatientWritesTest extends TestCase
                 'gp_name' => 'Dr Offline',
                 'gp_practice' => 'Test Surgery',
             ])
-            ->assertRedirect();
+            ->assertOk()
+            ->assertJsonPath('message', 'Patient profile updated successfully.');
 
         $patient->refresh();
         $this->assertSame('Dr Offline', $patient->gp_name);

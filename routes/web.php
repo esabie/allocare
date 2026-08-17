@@ -46,6 +46,7 @@ use App\Notifications\MedicationManagerAlertNotification;
 use App\Support\AuditTrail;
 use App\Notifications\News2EscalationNotification;
 use App\Support\CareLogTemplates;
+use App\Support\DailySupportCareLog;
 use App\Support\News2Scoring;
 use App\Support\PatientHandoverBuilder;
 use App\Support\PdfExport;
@@ -6148,16 +6149,26 @@ function map_care_journal_entry(CareJournalEntry $entry, ?User $viewer = null): 
             ?? $entry->linked_risk_assessment_slug;
     }
 
+    $templateLabel = null;
+    $structuredSummary = [];
+    if ($templateSlug === DailySupportCareLog::templateSlug()) {
+        $templateLabel = DailySupportCareLog::label();
+        $structuredSummary = DailySupportCareLog::structuredSummary($structured);
+    } elseif ($templateSlug) {
+        $templateLabel = CareLogTemplates::label($templateSlug);
+        $structuredSummary = CareLogTemplates::structuredSummary($templateSlug, $structured);
+    }
+
     return [
         'id' => $entry->id,
         'body' => $entry->body,
+        'shiftType' => $entry->shift_type,
+        'shiftTypeLabel' => $entry->shift_type === 'night' ? 'Night' : ($entry->shift_type === 'day' ? 'Day' : null),
         'templateSlug' => $templateSlug,
-        'templateLabel' => $templateSlug ? CareLogTemplates::label($templateSlug) : null,
+        'templateLabel' => $templateLabel,
         'isStructured' => $templateSlug !== null && $templateSlug !== '',
         'outcomeStatus' => $entry->outcome_status,
-        'structuredSummary' => $templateSlug
-            ? CareLogTemplates::structuredSummary($templateSlug, $structured)
-            : [],
+        'structuredSummary' => $structuredSummary,
         'linkedCarePlanSlug' => $entry->linked_care_plan_slug,
         'linkedCarePlanLabel' => $linkedCarePlanLabel,
         'linkedSupportObjective' => $entry->linked_support_objective,
@@ -6287,26 +6298,29 @@ function handle_dashboard_care_note_store(Request $request)
         $filter = 'all';
     }
 
-    $validated = $request->validate([
-        'patient_id' => ['required', 'integer', 'exists:patients,id'],
-        'body' => ['required', 'string', 'min:3', 'max:10000'],
-    ]);
+    $validated = DailySupportCareLog::validatePayload($request->all());
 
     $entry = CareJournalEntry::query()->create([
         'patient_id' => $validated['patient_id'],
         'author_user_id' => $request->user()->id,
-        'body' => trim($validated['body']),
+        'body' => $validated['body'],
+        'shift_type' => $validated['shift_type'],
+        'template_slug' => $validated['template_slug'],
+        'structured_data' => $validated['structured_data'],
         'recorded_at' => now(),
     ]);
 
     $patient = Patient::query()->find($validated['patient_id']);
     AuditTrail::record(
         'created',
-        'Recorded care note for '.($patient?->name ?? 'patient'),
+        'Recorded '.DailySupportCareLog::label().' for '.($patient?->name ?? 'patient'),
         'care_journal',
         (string) $entry->id,
         $patient?->name,
-        null,
+        [
+            'shift_type' => $validated['shift_type'],
+            'template_slug' => $validated['template_slug'],
+        ],
         ['patient_url_key' => $patient?->url_key],
         $request,
     );
@@ -6351,6 +6365,8 @@ Route::get('/dashboard/care-notes', function (Request $request) {
         'entries' => $entries,
         'patients' => $patients,
         'filter' => $filter,
+        'dailySupportCareLog' => DailySupportCareLog::frontendConfig(),
+        'staffName' => format_care_journal_author_name($request->user()),
     ]);
 })->middleware(['auth', 'verified'])->name('care-notes');
 
@@ -6359,6 +6375,22 @@ Route::redirect('/dashboard/journal', '/dashboard/care-notes');
 Route::post('/dashboard/care-notes', handle_dashboard_care_note_store(...))
     ->middleware(['auth', 'verified'])
     ->name('care-notes.store');
+
+Route::get('/dashboard/care-notes/occupied-slots', function (Request $request) {
+    $validated = $request->validate([
+        'patient_id' => ['required', 'integer', 'exists:patients,id'],
+        'log_date' => ['required', 'date'],
+        'shift_type' => ['required', 'string', 'in:day,night'],
+    ]);
+
+    return response()->json([
+        'occupiedSlots' => DailySupportCareLog::occupiedSlots(
+            (int) $validated['patient_id'],
+            $validated['log_date'],
+            $validated['shift_type'],
+        ),
+    ]);
+})->middleware(['auth', 'verified'])->name('care-notes.occupied-slots');
 
 Route::post('/dashboard/journal', handle_dashboard_care_note_store(...))
     ->middleware(['auth', 'verified'])
