@@ -6,9 +6,11 @@ import {
     formatUkHeaderDate,
     formatUkTime,
     formatUkTimeRange,
+    formatUkTimeWithZone,
     formatUkWeekRangeLabel,
     startOfUkWeekIso,
     ukDateIso,
+    ukTimeZoneAbbr,
     ukTodayIso,
 } from '@/utils/ukDateTime';
 import DashboardSidebar from '@/Components/DashboardSidebar';
@@ -130,6 +132,10 @@ export default function Schedules({
         staffId: '',
         status: '',
     });
+    const ukZoneLabel = ukTimeZoneAbbr();
+    const rescheduleZoneLabel = rescheduleEntry?.startAt
+        ? ukTimeZoneAbbr(rescheduleEntry.startAt)
+        : ukZoneLabel;
 
     const openCompletionModal = (entry) => {
         setSelectedEntry(entry);
@@ -655,7 +661,7 @@ export default function Schedules({
                                                                             >
                                                                                 <p className="text-[11px] font-bold text-slate-700">
                                                                                     {isOvernightEnd
-                                                                                        ? `Overnight shift ends ${formatUkTime(entry.endAt)}`
+                                                                                        ? `Overnight shift ends ${formatUkTimeWithZone(entry.endAt)}`
                                                                                         : formatUkTimeRange(entry.startAt, entry.endAt, entry.spansOvernight)}
                                                                                 </p>
                                                                                 <p className="mt-1 text-sm font-semibold text-slate-900">{entry.staffName || 'No Carer Assigned'}</p>
@@ -777,7 +783,7 @@ export default function Schedules({
 
                             <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
                                 <div className="sm:col-span-3">
-                                    <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">Visit Date (UK)</label>
+                                    <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">Visit Date ({ukZoneLabel})</label>
                                     <input
                                         type="date"
                                         value={data.visit_date}
@@ -788,7 +794,7 @@ export default function Schedules({
                                     {errors.visit_date && <p className="mt-1 text-xs text-rose-600">{errors.visit_date}</p>}
                                 </div>
                                 <div>
-                                    <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">Start (UK)</label>
+                                    <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">Start ({ukZoneLabel})</label>
                                     <input
                                         type="time"
                                         value={data.start_time}
@@ -799,7 +805,7 @@ export default function Schedules({
                                     {errors.start_time && <p className="mt-1 text-xs text-rose-600">{errors.start_time}</p>}
                                 </div>
                                 <div>
-                                    <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">End (UK)</label>
+                                    <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">End ({ukZoneLabel})</label>
                                     <input
                                         type="time"
                                         value={data.end_time}
@@ -810,7 +816,7 @@ export default function Schedules({
                                     {errors.end_time && <p className="mt-1 text-xs text-rose-600">{errors.end_time}</p>}
                                 </div>
                                 <p className="sm:col-span-3 text-xs text-slate-500">
-                                    Times are UK (Europe/London). Night shifts: use the visit start date and enter clock times (e.g. start 22:00, end 06:00). The system will carry the end time into the next day.
+                                    Times are UK ({ukZoneLabel}). Night shifts: use the visit start date and enter clock times (e.g. start 22:00, end 06:00). The system will carry the end time into the next day.
                                 </p>
                             </div>
 
@@ -856,7 +862,7 @@ export default function Schedules({
 
                         <div className="mt-4 space-y-3">
                             <div>
-                                <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-500">New Date (UK)</label>
+                                <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-500">New Date ({rescheduleZoneLabel})</label>
                                 <input
                                     type="date"
                                     value={rescheduleDate}
@@ -866,7 +872,7 @@ export default function Schedules({
                             </div>
                             <div className="grid grid-cols-2 gap-3">
                                 <div>
-                                    <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-500">Start Time (UK)</label>
+                                    <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-500">Start Time ({rescheduleZoneLabel})</label>
                                     <input
                                         type="time"
                                         value={rescheduleStartTime}
@@ -875,7 +881,7 @@ export default function Schedules({
                                     />
                                 </div>
                                 <div>
-                                    <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-500">End Time (UK)</label>
+                                    <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-500">End Time ({rescheduleZoneLabel})</label>
                                     <input
                                         type="time"
                                         value={rescheduleEndTime}

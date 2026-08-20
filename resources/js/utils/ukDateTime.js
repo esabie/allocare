@@ -95,6 +95,43 @@ export function formatUkTime(value) {
     });
 }
 
+/** UK abbreviation for an instant — typically BST or GMT. */
+export function ukTimeZoneAbbr(value = new Date()) {
+    const date = value instanceof Date ? value : new Date(value);
+    if (Number.isNaN(date.getTime())) {
+        return 'UK';
+    }
+
+    const parts = new Intl.DateTimeFormat('en-GB', {
+        timeZone: UK_TIME_ZONE,
+        timeZoneName: 'short',
+    }).formatToParts(date);
+
+    const name = parts.find((part) => part.type === 'timeZoneName')?.value?.trim();
+    if (!name) {
+        return 'UK';
+    }
+
+    // Some engines return "GMT+1" instead of "BST".
+    if (name === 'GMT+1' || name === 'UTC+1') {
+        return 'BST';
+    }
+    if (name === 'GMT+0' || name === 'UTC+0' || name === 'UTC') {
+        return 'GMT';
+    }
+
+    return name;
+}
+
+export function formatUkTimeWithZone(value) {
+    const time = formatUkTime(value);
+    if (time === '--') {
+        return time;
+    }
+
+    return `${time} ${ukTimeZoneAbbr(value)}`;
+}
+
 export function formatUkTimeRange(startIso, endIso, spansOvernight = false) {
     const start = startIso ? new Date(startIso) : null;
     const end = endIso ? new Date(endIso) : null;
@@ -103,7 +140,8 @@ export function formatUkTimeRange(startIso, endIso, spansOvernight = false) {
     }
 
     const overnight = spansOvernight || ukDateIso(start) !== ukDateIso(end);
-    const label = `${formatUkTime(start)} - ${formatUkTime(end)}`;
+    const zone = ukTimeZoneAbbr(start);
+    const label = `${formatUkTime(start)} - ${formatUkTime(end)} ${zone}`;
 
     return overnight ? `${label} (overnight)` : label;
 }

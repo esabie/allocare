@@ -327,6 +327,12 @@ export default function PatientRecord({
                                     <span className={`rounded-full px-3 py-1 text-xs font-semibold uppercase tracking-wide ${ragBadgeClass}`}>
                                         {statusLabel}
                                     </span>
+                                    <Link
+                                        href={route('schedules', { patient: patientSlug })}
+                                        className="rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+                                    >
+                                        View Patient&apos;s Schedule
+                                    </Link>
                                     {canEditProfile && (
                                         <button type="button" onClick={openProfileEdit} className="rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50">
                                             Edit profile
