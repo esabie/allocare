@@ -1,47 +1,19 @@
 import { Head, Link, useForm, usePage } from '@inertiajs/react';
 import { useMemo, useState } from 'react';
 import { routerPatchWithOffline, routerPostWithOffline } from '@/utils/offlineQueue';
+import {
+    addUkDaysIso,
+    formatUkHeaderDate,
+    formatUkTime,
+    formatUkTimeRange,
+    formatUkWeekRangeLabel,
+    startOfUkWeekIso,
+    ukDateIso,
+    ukTodayIso,
+} from '@/utils/ukDateTime';
 import DashboardSidebar from '@/Components/DashboardSidebar';
 import AppHeaderNav from '@/Components/AppHeaderNav';
 import ProfileMenu from '@/Components/ProfileMenu';
-
-const weekDayLabels = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-
-function getStartOfWeek(date) {
-    const value = new Date(date);
-    const day = value.getDay();
-    value.setDate(value.getDate() - day);
-    value.setHours(0, 0, 0, 0);
-    return value;
-}
-
-function formatHeaderDate(date) {
-    const day = date.getDate();
-    const mod100 = day % 100;
-    const ordinal = (mod100 >= 11 && mod100 <= 13)
-        ? 'th'
-        : ({ 1: 'st', 2: 'nd', 3: 'rd' }[day % 10] || 'th');
-
-    return `${weekDayLabels[date.getDay()]} ${day}${ordinal}`;
-}
-
-function formatTimeRange(startIso, endIso, spansOvernight = false) {
-    const start = startIso ? new Date(startIso) : null;
-    const end = endIso ? new Date(endIso) : null;
-    if (!start || !end) return '--';
-
-    const startLabel = start.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    const endLabel = end.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    const overnight =
-        spansOvernight ||
-        start.toDateString() !== end.toDateString();
-
-    return overnight ? `${startLabel} - ${endLabel} (overnight)` : `${startLabel} - ${endLabel}`;
-}
-
-function formatTimeHm(date) {
-    return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
-}
 
 function firstErrorMessage(error) {
     if (!error) return '';
@@ -60,14 +32,6 @@ function firstErrorMessage(error) {
         }
     }
     return '';
-}
-
-/** Local calendar YYYY-MM-DD — never use toISOString() here (UTC day-shift in UK/EU). */
-function toIsoDate(date) {
-    const year = date.getFullYear();
-    const month = String(date.getMonth() + 1).padStart(2, '0');
-    const day = String(date.getDate()).padStart(2, '0');
-    return `${year}-${month}-${day}`;
 }
 
 function getStatusMeta(entry) {
@@ -153,7 +117,7 @@ export default function Schedules({
     const [showNewBooking, setShowNewBooking] = useState(Boolean(openBooking && focusedPatientKey && canManageRostering));
     const [showFilters, setShowFilters] = useState(false);
     const [bookedOnly, setBookedOnly] = useState(false);
-    const [weekAnchor, setWeekAnchor] = useState(() => getStartOfWeek(new Date()));
+    const [weekAnchorIso, setWeekAnchorIso] = useState(() => startOfUkWeekIso(ukTodayIso()));
     const [draggedEntry, setDraggedEntry] = useState(null);
     const [selectedEntry, setSelectedEntry] = useState(null);
     const [completionNotes, setCompletionNotes] = useState('');
@@ -220,10 +184,10 @@ export default function Schedules({
     const openRescheduleModal = (entry) => {
         setRescheduleEntry(entry);
         const startDate = entry.startAt ? new Date(entry.startAt) : new Date();
-        setRescheduleDate(toIsoDate(startDate));
-        setRescheduleStartTime(formatTimeHm(startDate));
+        setRescheduleDate(ukDateIso(startDate));
+        setRescheduleStartTime(formatUkTime(startDate));
         const endDate = entry.endAt ? new Date(entry.endAt) : new Date();
-        setRescheduleEndTime(formatTimeHm(endDate));
+        setRescheduleEndTime(formatUkTime(endDate));
     };
 
     const closeRescheduleModal = () => {
@@ -338,16 +302,14 @@ export default function Schedules({
 
         const previousStart = new Date(draggedEntry.startAt);
         const previousEnd = new Date(draggedEntry.endAt);
-        const targetDate = new Date(`${targetDateIso}T00:00:00`);
-        if (Number.isNaN(previousStart.getTime()) || Number.isNaN(previousEnd.getTime()) || Number.isNaN(targetDate.getTime())) {
+        if (Number.isNaN(previousStart.getTime()) || Number.isNaN(previousEnd.getTime()) || !targetDateIso) {
             setDraggedEntry(null);
             return;
         }
 
-        const durationMs = previousEnd.getTime() - previousStart.getTime();
-        const nextStart = new Date(targetDate);
-        nextStart.setHours(previousStart.getHours(), previousStart.getMinutes(), 0, 0);
-        const nextEnd = new Date(nextStart.getTime() + durationMs);
+        // Keep UK wall-clock start/end (server extends overnight when end <= start).
+        const startHm = formatUkTime(previousStart);
+        const endHm = formatUkTime(previousEnd);
 
         setQueueMessage('');
         await routerPatchWithOffline(
@@ -355,8 +317,8 @@ export default function Schedules({
             {
                 patient_url_key: targetPatientUrlKey,
                 visit_date: targetDateIso,
-                start_time: formatTimeHm(nextStart),
-                end_time: formatTimeHm(nextEnd),
+                start_time: startHm,
+                end_time: endHm,
             },
             {
                 onQueued: () => setQueueMessage('Saved offline — reschedule will sync when connection returns.'),
@@ -365,16 +327,15 @@ export default function Schedules({
         setDraggedEntry(null);
     };
 
-    const weekDates = useMemo(() => {
-        return Array.from({ length: 7 }, (_, index) => {
-            const value = new Date(weekAnchor);
-            value.setDate(weekAnchor.getDate() + index);
-            return value;
-        });
-    }, [weekAnchor]);
+    const weekDateKeys = useMemo(
+        () => Array.from({ length: 7 }, (_, index) => addUkDaysIso(weekAnchorIso, index)),
+        [weekAnchorIso],
+    );
 
-    const weekStartLabel = weekDates[0]?.toLocaleDateString([], { weekday: 'short', day: 'numeric' }) ?? '';
-    const weekEndLabel = weekDates[6]?.toLocaleDateString([], { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' }) ?? '';
+    const weekRangeLabel = useMemo(
+        () => formatUkWeekRangeLabel(weekDateKeys[0], weekDateKeys[6]),
+        [weekDateKeys],
+    );
 
     const filteredEntries = useMemo(() => {
         return entries.filter((entry) => {
@@ -411,8 +372,8 @@ export default function Schedules({
             }
 
             const patient = map.get(entry.patientUrlKey);
-            const startDate = toIsoDate(new Date(entry.startAt));
-            const endDate = entry.endAt ? toIsoDate(new Date(entry.endAt)) : startDate;
+            const startDate = ukDateIso(new Date(entry.startAt));
+            const endDate = entry.endAt ? ukDateIso(new Date(entry.endAt)) : startDate;
 
             if (!patient.schedulesByDate[startDate]) {
                 patient.schedulesByDate[startDate] = [];
@@ -517,25 +478,17 @@ export default function Schedules({
                                 <div className="flex items-center gap-2">
                                     <button
                                         type="button"
-                                        onClick={() => setWeekAnchor((prev) => {
-                                            const next = new Date(prev);
-                                            next.setDate(prev.getDate() - 7);
-                                            return next;
-                                        })}
+                                        onClick={() => setWeekAnchorIso((prev) => addUkDaysIso(prev, -7))}
                                         className="rounded-lg border border-slate-200 px-3 py-1.5 text-sm text-slate-700 hover:bg-slate-50"
                                     >
                                         {'<'}
                                     </button>
                                     <p className="text-lg font-semibold text-slate-900">
-                                        {weekStartLabel} - {weekEndLabel}
+                                        {weekRangeLabel}
                                     </p>
                                     <button
                                         type="button"
-                                        onClick={() => setWeekAnchor((prev) => {
-                                            const next = new Date(prev);
-                                            next.setDate(prev.getDate() + 7);
-                                            return next;
-                                        })}
+                                        onClick={() => setWeekAnchorIso((prev) => addUkDaysIso(prev, 7))}
                                         className="rounded-lg border border-slate-200 px-3 py-1.5 text-sm text-slate-700 hover:bg-slate-50"
                                     >
                                         {'>'}
@@ -560,7 +513,7 @@ export default function Schedules({
                                     </button>
                                     <button
                                         type="button"
-                                        onClick={() => setWeekAnchor(getStartOfWeek(new Date()))}
+                                        onClick={() => setWeekAnchorIso(startOfUkWeekIso(ukTodayIso()))}
                                         className="rounded-lg border border-slate-200 px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50"
                                     >
                                         Today
@@ -646,12 +599,12 @@ export default function Schedules({
                                             <th className="w-64 border border-slate-100 bg-slate-50 px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">
                                                 Customers
                                             </th>
-                                            {weekDates.map((date) => (
+                                            {weekDateKeys.map((dateKey) => (
                                                 <th
-                                                    key={toIsoDate(date)}
+                                                    key={dateKey}
                                                     className="min-w-[140px] border border-slate-100 bg-slate-50 px-3 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500"
                                                 >
-                                                    {formatHeaderDate(date)}
+                                                    {formatUkHeaderDate(dateKey)}
                                                 </th>
                                             ))}
                                         </tr>
@@ -670,8 +623,7 @@ export default function Schedules({
                                                         </p>
                                                     )}
                                                 </td>
-                                                {weekDates.map((date) => {
-                                                    const dateKey = toIsoDate(date);
+                                                {weekDateKeys.map((dateKey) => {
                                                     const dayEntries = patient.schedulesByDate?.[dateKey] || [];
 
                                                     return (
@@ -703,8 +655,8 @@ export default function Schedules({
                                                                             >
                                                                                 <p className="text-[11px] font-bold text-slate-700">
                                                                                     {isOvernightEnd
-                                                                                        ? `Overnight shift ends ${new Date(entry.endAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`
-                                                                                        : formatTimeRange(entry.startAt, entry.endAt, entry.spansOvernight)}
+                                                                                        ? `Overnight shift ends ${formatUkTime(entry.endAt)}`
+                                                                                        : formatUkTimeRange(entry.startAt, entry.endAt, entry.spansOvernight)}
                                                                                 </p>
                                                                                 <p className="mt-1 text-sm font-semibold text-slate-900">{entry.staffName || 'No Carer Assigned'}</p>
                                                                                 <p className="mt-0.5 text-xs text-slate-500">
@@ -825,7 +777,7 @@ export default function Schedules({
 
                             <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
                                 <div className="sm:col-span-3">
-                                    <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">Visit Date</label>
+                                    <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">Visit Date (UK)</label>
                                     <input
                                         type="date"
                                         value={data.visit_date}
@@ -836,7 +788,7 @@ export default function Schedules({
                                     {errors.visit_date && <p className="mt-1 text-xs text-rose-600">{errors.visit_date}</p>}
                                 </div>
                                 <div>
-                                    <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">Start</label>
+                                    <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">Start (UK)</label>
                                     <input
                                         type="time"
                                         value={data.start_time}
@@ -847,7 +799,7 @@ export default function Schedules({
                                     {errors.start_time && <p className="mt-1 text-xs text-rose-600">{errors.start_time}</p>}
                                 </div>
                                 <div>
-                                    <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">End</label>
+                                    <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">End (UK)</label>
                                     <input
                                         type="time"
                                         value={data.end_time}
@@ -858,7 +810,7 @@ export default function Schedules({
                                     {errors.end_time && <p className="mt-1 text-xs text-rose-600">{errors.end_time}</p>}
                                 </div>
                                 <p className="sm:col-span-3 text-xs text-slate-500">
-                                    Night shifts: use the visit start date and enter clock times (e.g. start 22:00, end 06:00). The system will carry the end time into the next day.
+                                    Times are UK (Europe/London). Night shifts: use the visit start date and enter clock times (e.g. start 22:00, end 06:00). The system will carry the end time into the next day.
                                 </p>
                             </div>
 
@@ -904,7 +856,7 @@ export default function Schedules({
 
                         <div className="mt-4 space-y-3">
                             <div>
-                                <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-500">New Date</label>
+                                <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-500">New Date (UK)</label>
                                 <input
                                     type="date"
                                     value={rescheduleDate}
@@ -914,7 +866,7 @@ export default function Schedules({
                             </div>
                             <div className="grid grid-cols-2 gap-3">
                                 <div>
-                                    <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-500">Start Time</label>
+                                    <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-500">Start Time (UK)</label>
                                     <input
                                         type="time"
                                         value={rescheduleStartTime}
@@ -923,7 +875,7 @@ export default function Schedules({
                                     />
                                 </div>
                                 <div>
-                                    <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-500">End Time</label>
+                                    <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-500">End Time (UK)</label>
                                     <input
                                         type="time"
                                         value={rescheduleEndTime}

@@ -1,6 +1,7 @@
 import { Head, Link, useForm, usePage } from '@inertiajs/react';
 import { useEffect, useRef, useState } from 'react';
 import { routerPatchWithOffline } from '@/utils/offlineQueue';
+import { formatUkDateLabel, formatUkTimeRange } from '@/utils/ukDateTime';
 import PatientRecordSidebar from '@/Components/PatientRecordSidebar';
 import AppHeaderNav from '@/Components/AppHeaderNav';
 import ProfileMenu from '@/Components/ProfileMenu';
@@ -159,12 +160,12 @@ export default function PatientRecord({
         },
     ];
 
-    const nextVisitStart = nextVisit?.startAt ? new Date(nextVisit.startAt) : null;
-    const nextVisitEnd = nextVisit?.endAt ? new Date(nextVisit.endAt) : null;
-    const nextVisitTimeSlot = nextVisitStart && nextVisitEnd
-        ? `${nextVisitStart.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} - ${nextVisitEnd.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`
+    const nextVisitTimeSlot = nextVisit?.startAt && nextVisit?.endAt
+        ? formatUkTimeRange(nextVisit.startAt, nextVisit.endAt)
         : null;
-    const nextVisitDate = nextVisitStart ? nextVisitStart.toLocaleDateString() : null;
+    const nextVisitDate = nextVisit?.startAt
+        ? formatUkDateLabel(nextVisit.startAt)
+        : null;
 
     const environmentItems = [
         patient?.mobilityAids ? `Mobility: ${patient.mobilityAids}` : null,

@@ -149,8 +149,9 @@ function normalize_employee_date_of_birth(?string $rawDateOfBirth): ?string
 
 function resolve_schedule_window(string $visitDate, string $startTime, string $endTime): array
 {
-    $startAt = Carbon::parse($visitDate.' '.$startTime);
-    $endAt = Carbon::parse($visitDate.' '.$endTime);
+    $timezone = config('app.timezone', 'Europe/London');
+    $startAt = Carbon::parse($visitDate.' '.$startTime, $timezone);
+    $endAt = Carbon::parse($visitDate.' '.$endTime, $timezone);
 
     if ($endAt->lessThanOrEqualTo($startAt)) {
         $endAt = $endAt->copy()->addDay();
