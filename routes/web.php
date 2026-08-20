@@ -8338,6 +8338,7 @@ Route::get('/patients/{patient}/care-notes', function (Request $request, string 
         'filter' => $filter,
         'dailySupportCareLog' => DailySupportCareLog::frontendConfig(),
         'staffName' => format_care_journal_author_name($request->user()),
+        'openForm' => $request->boolean('new'),
     ]);
 })->middleware(['auth', 'verified'])->name('patients.care-notes');
 

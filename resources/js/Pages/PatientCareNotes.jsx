@@ -36,11 +36,12 @@ export default function PatientCareNotes({
     filter = 'all',
     dailySupportCareLog = null,
     staffName = '',
+    openForm: openFormOnLoad = false,
 }) {
     const successMessage = usePage().props?.flash?.success;
     const patientName = patient?.name || 'Unknown Patient';
     const patientId = patient?.id ? String(patient.id) : '';
-    const [showForm, setShowForm] = useState(false);
+    const [showForm, setShowForm] = useState(Boolean(openFormOnLoad));
     const [selectedEntry, setSelectedEntry] = useState(null);
     const [occupiedSlots, setOccupiedSlots] = useState({});
     const [queueMessage, setQueueMessage] = useState('');

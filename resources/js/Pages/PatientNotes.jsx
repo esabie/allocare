@@ -266,6 +266,12 @@ export default function PatientNotes({
                                     >
                                         Export PDF
                                     </a>
+                                    <Link
+                                        href={route('patients.care-notes', { patient: patientSlug, new: 1 })}
+                                        className="rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-2 text-sm font-semibold text-emerald-800 hover:bg-emerald-100"
+                                    >
+                                        + New Care Note
+                                    </Link>
                                     {canCreateNotes && (
                                         <button
                                             type="button"
