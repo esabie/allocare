@@ -175,4 +175,70 @@ class ScheduleTest extends TestCase
         $this->assertSame('2026-05-26 21:00:00', $schedule->start_at->format('Y-m-d H:i:s'));
         $this->assertSame('2026-05-27 05:00:00', $schedule->end_at->format('Y-m-d H:i:s'));
     }
+
+    public function test_schedules_page_can_focus_a_single_patient(): void
+    {
+        $manager = $this->careManager();
+        $carer = $this->careWorker();
+        $focused = $this->patient([
+            'url_key' => 'pt-focus',
+            'slug' => 'pt-focus',
+            'name' => 'Focused Patient',
+        ]);
+        $other = $this->patient([
+            'url_key' => 'pt-other',
+            'slug' => 'pt-other',
+            'name' => 'Other Patient',
+        ]);
+
+        PatientSchedule::query()->create([
+            'patient_id' => $focused->id,
+            'assigned_user_id' => $carer->id,
+            'start_at' => now()->addDay()->setTime(9, 0),
+            'end_at' => now()->addDay()->setTime(11, 0),
+            'purpose' => 'Focused visit',
+        ]);
+        PatientSchedule::query()->create([
+            'patient_id' => $other->id,
+            'assigned_user_id' => $carer->id,
+            'start_at' => now()->addDay()->setTime(12, 0),
+            'end_at' => now()->addDay()->setTime(14, 0),
+            'purpose' => 'Other visit',
+        ]);
+
+        $this->actingAs($manager)
+            ->get(route('patients.schedules', ['patient' => $focused->url_key, 'book' => 1]))
+            ->assertOk()
+            ->assertInertia(fn ($page) => $page
+                ->component('Schedules')
+                ->where('focusPatient.urlKey', $focused->url_key)
+                ->where('openBooking', true)
+                ->has('patients', 1)
+                ->where('patients.0.urlKey', $focused->url_key)
+                ->has('entries', 1)
+                ->where('entries.0.patientUrlKey', $focused->url_key));
+    }
+
+    public function test_store_keeps_patient_focus_when_requested(): void
+    {
+        $manager = $this->careManager();
+        $carer = $this->careWorker();
+        $patient = $this->patient([
+            'url_key' => 'pt-keep-focus',
+            'slug' => 'pt-keep-focus',
+            'name' => 'Keep Focus Patient',
+        ]);
+
+        $this->actingAs($manager)
+            ->post(route('schedules.store'), [
+                'patient_url_key' => $patient->url_key,
+                'assigned_user_id' => $carer->id,
+                'visit_date' => '2026-05-24',
+                'start_time' => '10:00',
+                'end_time' => '12:00',
+                'purpose' => 'Focused booking',
+                'keep_patient_focus' => 1,
+            ])
+            ->assertRedirect(route('patients.schedules', ['patient' => $patient->url_key]));
+    }
 }

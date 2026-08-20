@@ -190,4 +190,62 @@ class JournalTest extends TestCase
             ->assertJsonPath('occupiedSlots.07_08.notes', 'Assisted with morning personal care and hydration.')
             ->assertJsonPath('occupiedSlots.07_08.label', '07:00-08:00');
     }
+
+    public function test_patient_care_notes_page_scopes_to_patient(): void
+    {
+        $user = User::factory()->create();
+        $patient = Patient::query()->create([
+            'url_key' => 'pt-care-notes-page',
+            'slug' => 'pt-care-notes-page',
+            'name' => 'Care Notes Patient',
+        ]);
+        $other = Patient::query()->create([
+            'url_key' => 'pt-care-notes-other',
+            'slug' => 'pt-care-notes-other',
+            'name' => 'Other Patient',
+        ]);
+
+        CareJournalEntry::query()->create([
+            'patient_id' => $patient->id,
+            'author_user_id' => $user->id,
+            'body' => 'Patient note',
+            'recorded_at' => now(),
+        ]);
+        CareJournalEntry::query()->create([
+            'patient_id' => $other->id,
+            'author_user_id' => $user->id,
+            'body' => 'Other note',
+            'recorded_at' => now(),
+        ]);
+
+        $this->actingAs($user)
+            ->get(route('patients.care-notes', $patient->url_key))
+            ->assertOk()
+            ->assertInertia(fn ($page) => $page
+                ->component('PatientCareNotes')
+                ->where('patient.urlKey', $patient->url_key)
+                ->has('entries', 1)
+                ->where('entries.0.body', 'Patient note')
+                ->has('dailySupportCareLog.daySlots'));
+    }
+
+    public function test_care_note_store_can_return_to_patient_care_notes(): void
+    {
+        $user = User::factory()->create();
+        $patient = Patient::query()->create([
+            'url_key' => 'pt-care-notes-return',
+            'slug' => 'pt-care-notes-return',
+            'name' => 'Return Patient',
+        ]);
+
+        $payload = $this->validDailySupportPayload($patient->id);
+        $payload['return_patient_url_key'] = $patient->url_key;
+
+        $this->actingAs($user)
+            ->post(route('care-notes.store'), $payload)
+            ->assertRedirect(route('patients.care-notes', [
+                'patient' => $patient->url_key,
+                'filter' => 'all',
+            ]));
+    }
 }

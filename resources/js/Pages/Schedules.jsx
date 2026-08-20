@@ -16,7 +16,13 @@ function getStartOfWeek(date) {
 }
 
 function formatHeaderDate(date) {
-    return `${weekDayLabels[date.getDay()]} ${date.getDate()}${date.getDate() === 1 ? 'st' : date.getDate() === 2 ? 'nd' : date.getDate() === 3 ? 'rd' : 'th'}`;
+    const day = date.getDate();
+    const mod100 = day % 100;
+    const ordinal = (mod100 >= 11 && mod100 <= 13)
+        ? 'th'
+        : ({ 1: 'st', 2: 'nd', 3: 'rd' }[day % 10] || 'th');
+
+    return `${weekDayLabels[date.getDay()]} ${day}${ordinal}`;
 }
 
 function formatTimeRange(startIso, endIso, spansOvernight = false) {
@@ -56,8 +62,12 @@ function firstErrorMessage(error) {
     return '';
 }
 
+/** Local calendar YYYY-MM-DD — never use toISOString() here (UTC day-shift in UK/EU). */
 function toIsoDate(date) {
-    return date.toISOString().slice(0, 10);
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
 }
 
 function getStatusMeta(entry) {
@@ -127,12 +137,20 @@ function getStatusMeta(entry) {
     };
 }
 
-export default function Schedules({ patients = [], staff = [], entries = [], canManageRostering = false }) {
+export default function Schedules({
+    patients = [],
+    staff = [],
+    entries = [],
+    canManageRostering = false,
+    focusPatient = null,
+    openBooking = false,
+}) {
     const flashSuccess = usePage().props?.flash?.success;
+    const focusedPatientKey = focusPatient?.urlKey || '';
     const [queueMessage, setQueueMessage] = useState('');
     const [submitErrorMessage, setSubmitErrorMessage] = useState('');
     const [savingBooking, setSavingBooking] = useState(false);
-    const [showNewBooking, setShowNewBooking] = useState(false);
+    const [showNewBooking, setShowNewBooking] = useState(Boolean(openBooking && focusedPatientKey && canManageRostering));
     const [showFilters, setShowFilters] = useState(false);
     const [bookedOnly, setBookedOnly] = useState(false);
     const [weekAnchor, setWeekAnchor] = useState(() => getStartOfWeek(new Date()));
@@ -144,7 +162,7 @@ export default function Schedules({ patients = [], staff = [], entries = [], can
     const [rescheduleStartTime, setRescheduleStartTime] = useState('');
     const [rescheduleEndTime, setRescheduleEndTime] = useState('');
     const [filters, setFilters] = useState({
-        patientUrlKey: '',
+        patientUrlKey: focusedPatientKey,
         staffId: '',
         status: '',
     });
@@ -202,10 +220,10 @@ export default function Schedules({ patients = [], staff = [], entries = [], can
     const openRescheduleModal = (entry) => {
         setRescheduleEntry(entry);
         const startDate = entry.startAt ? new Date(entry.startAt) : new Date();
-        setRescheduleDate(startDate.toISOString().split('T')[0]);
-        setRescheduleStartTime(startDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false }));
+        setRescheduleDate(toIsoDate(startDate));
+        setRescheduleStartTime(formatTimeHm(startDate));
         const endDate = entry.endAt ? new Date(entry.endAt) : new Date();
-        setRescheduleEndTime(endDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false }));
+        setRescheduleEndTime(formatTimeHm(endDate));
     };
 
     const closeRescheduleModal = () => {
@@ -240,13 +258,14 @@ export default function Schedules({ patients = [], staff = [], entries = [], can
         );
     };
     const { data, setData, errors, reset } = useForm({
-        patient_url_key: '',
+        patient_url_key: focusedPatientKey,
         assigned_user_id: '',
         visit_date: '',
         start_time: '',
         end_time: '',
         purpose: '',
         notes: '',
+        keep_patient_focus: focusedPatientKey ? 1 : 0,
     });
 
     const selectedPatient = useMemo(
@@ -273,11 +292,23 @@ export default function Schedules({ patients = [], staff = [], entries = [], can
         setSavingBooking(true);
         await routerPostWithOffline(route('schedules.store'), data, {
             onSuccess: () => {
-                reset('patient_url_key', 'assigned_user_id', 'visit_date', 'start_time', 'end_time', 'purpose', 'notes');
+                reset('assigned_user_id', 'visit_date', 'start_time', 'end_time', 'purpose', 'notes');
+                if (focusedPatientKey) {
+                    setData('patient_url_key', focusedPatientKey);
+                    setData('keep_patient_focus', 1);
+                } else {
+                    reset('patient_url_key', 'keep_patient_focus');
+                }
                 setShowNewBooking(false);
             },
             onQueued: () => {
-                reset('patient_url_key', 'assigned_user_id', 'visit_date', 'start_time', 'end_time', 'purpose', 'notes');
+                reset('assigned_user_id', 'visit_date', 'start_time', 'end_time', 'purpose', 'notes');
+                if (focusedPatientKey) {
+                    setData('patient_url_key', focusedPatientKey);
+                    setData('keep_patient_focus', 1);
+                } else {
+                    reset('patient_url_key', 'keep_patient_focus');
+                }
                 setShowNewBooking(false);
                 setQueueMessage('Saved offline — new visit will sync when connection returns.');
             },
@@ -432,8 +463,43 @@ export default function Schedules({ patients = [], staff = [], entries = [], can
                         <div className="mb-4 flex items-center gap-2 text-xs font-medium text-slate-500">
                             <Link href={route('dashboard')} className="hover:text-slate-700">Dashboard</Link>
                             <span>/</span>
+                            {focusPatient?.urlKey ? (
+                                <>
+                                    <Link href={route('patients.show', focusPatient.urlKey)} className="hover:text-slate-700">
+                                        {focusPatient.name}
+                                    </Link>
+                                    <span>/</span>
+                                </>
+                            ) : null}
                             <span className="text-slate-900">Schedules</span>
                         </div>
+
+                        {focusPatient && (
+                            <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-indigo-200 bg-indigo-50 px-4 py-3">
+                                <div>
+                                    <p className="text-sm font-semibold text-indigo-900">
+                                        Booking for {focusPatient.name}
+                                    </p>
+                                    <p className="text-xs text-indigo-700">
+                                        Only this service user&apos;s visits are shown.
+                                    </p>
+                                </div>
+                                <div className="flex flex-wrap gap-2">
+                                    <Link
+                                        href={route('patients.show', focusPatient.urlKey)}
+                                        className="rounded-lg border border-indigo-200 bg-white px-3 py-1.5 text-xs font-semibold text-indigo-800 hover:bg-indigo-100"
+                                    >
+                                        Back to profile
+                                    </Link>
+                                    <Link
+                                        href={route('schedules')}
+                                        className="rounded-lg border border-indigo-200 bg-white px-3 py-1.5 text-xs font-semibold text-indigo-800 hover:bg-indigo-100"
+                                    >
+                                        View all patients
+                                    </Link>
+                                </div>
+                            </div>
+                        )}
 
                         {(flashSuccess || queueMessage) && (
                             <div className="mb-4 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
@@ -502,7 +568,13 @@ export default function Schedules({ patients = [], staff = [], entries = [], can
                                     {canManageRostering && (
                                         <button
                                             type="button"
-                                            onClick={() => setShowNewBooking(true)}
+                                            onClick={() => {
+                                                if (focusedPatientKey) {
+                                                    setData('patient_url_key', focusedPatientKey);
+                                                    setData('keep_patient_focus', 1);
+                                                }
+                                                setShowNewBooking(true);
+                                            }}
                                             className="rounded-lg bg-slate-900 px-4 py-1.5 text-sm font-semibold text-white hover:bg-slate-800"
                                         >
                                             New Booking
@@ -518,9 +590,10 @@ export default function Schedules({ patients = [], staff = [], entries = [], can
                                         <select
                                             value={filters.patientUrlKey}
                                             onChange={(event) => setFilters((prev) => ({ ...prev, patientUrlKey: event.target.value }))}
-                                            className="mt-1 w-full rounded-md border border-slate-200 bg-white px-2 py-2 text-sm"
+                                            disabled={Boolean(focusedPatientKey)}
+                                            className="mt-1 w-full rounded-md border border-slate-200 bg-white px-2 py-2 text-sm disabled:bg-slate-100 disabled:text-slate-500"
                                         >
-                                            <option value="">All patients</option>
+                                            {!focusedPatientKey && <option value="">All patients</option>}
                                             {patients.map((patient) => (
                                                 <option key={patient.urlKey} value={patient.urlKey}>{patient.name}</option>
                                             ))}
@@ -557,7 +630,7 @@ export default function Schedules({ patients = [], staff = [], entries = [], can
                                     <div className="flex items-end">
                                         <button
                                             type="button"
-                                            onClick={() => setFilters({ patientUrlKey: '', staffId: '', status: '' })}
+                                            onClick={() => setFilters({ patientUrlKey: focusedPatientKey, staffId: '', status: '' })}
                                             className="w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-100"
                                         >
                                             Reset filters
@@ -704,17 +777,27 @@ export default function Schedules({ patients = [], staff = [], entries = [], can
                         <form onSubmit={submit} className="space-y-3">
                             <div>
                                 <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">Patient</label>
-                                <select
-                                    value={data.patient_url_key}
-                                    onChange={(event) => setData('patient_url_key', event.target.value)}
-                                    className="mt-1 w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm"
-                                    required
-                                >
-                                    <option value="">Select patient</option>
-                                    {patients.filter((patient) => patient.isRosterable !== false).map((patient) => (
-                                        <option key={patient.urlKey} value={patient.urlKey}>{patient.name}</option>
-                                    ))}
-                                </select>
+                                {focusedPatientKey ? (
+                                    <>
+                                        <input type="hidden" name="patient_url_key" value={data.patient_url_key} />
+                                        <input type="hidden" name="keep_patient_focus" value="1" />
+                                        <p className="mt-1 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-medium text-slate-800">
+                                            {focusPatient?.name || selectedPatient?.name || 'Selected patient'}
+                                        </p>
+                                    </>
+                                ) : (
+                                    <select
+                                        value={data.patient_url_key}
+                                        onChange={(event) => setData('patient_url_key', event.target.value)}
+                                        className="mt-1 w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm"
+                                        required
+                                    >
+                                        <option value="">Select patient</option>
+                                        {patients.filter((patient) => patient.isRosterable !== false).map((patient) => (
+                                            <option key={patient.urlKey} value={patient.urlKey}>{patient.name}</option>
+                                        ))}
+                                    </select>
+                                )}
                                 {errors.patient_url_key && <p className="mt-1 text-xs text-rose-600">{errors.patient_url_key}</p>}
                                 {selectedPatient?.careGroupLabel && (
                                     <p className="mt-1 text-xs text-slate-500">Care group: {selectedPatient.careGroupLabel}</p>

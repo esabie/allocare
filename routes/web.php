@@ -6333,8 +6333,18 @@ function handle_dashboard_care_note_store(Request $request)
         ], 201);
     }
 
+    $returnPatientKey = trim((string) $request->input('return_patient_url_key', ''));
+    if ($returnPatientKey !== '' && $patient?->url_key && $returnPatientKey !== $patient->url_key) {
+        $returnPatientKey = '';
+    }
+
     return redirect()
-        ->route('care-notes', ['filter' => $filter])
+        ->route(
+            $returnPatientKey !== '' ? 'patients.care-notes' : 'care-notes',
+            $returnPatientKey !== ''
+                ? ['patient' => $returnPatientKey, 'filter' => $filter]
+                : ['filter' => $filter],
+        )
         ->with('success', 'Care note recorded.');
 }
 } // handle_dashboard_care_note_store
@@ -6396,84 +6406,120 @@ Route::post('/dashboard/journal', handle_dashboard_care_note_store(...))
     ->middleware(['auth', 'verified'])
     ->name('journal.store');
 
-Route::get('/schedules', function () {
-    $patients = Patient::query()
-        ->where(function ($query) {
-            $query->whereIn('lifecycle_status', [Patient::LIFECYCLE_ACTIVE, Patient::LIFECYCLE_INACTIVE])
-                ->orWhereNull('lifecycle_status');
-        })
-        ->orderBy('name')
-        ->get(['id', 'name', 'url_key', 'reference', 'lifecycle_status', 'care_group'])
-        ->map(fn ($patient) => [
-            'id' => $patient->id,
-            'name' => $patient->name,
-            'urlKey' => $patient->url_key,
-            'reference' => $patient->reference,
-            'lifecycleStatus' => $patient->normalizedLifecycleStatus(),
-            'lifecycleStatusLabel' => $patient->lifecycleStatusLabel(),
-            'isRosterable' => $patient->isRosterable(),
-            'careGroup' => $patient->care_group,
-            'careGroupLabel' => \App\Support\PatientRegistration::careGroupLabel($patient->care_group),
-        ])
-        ->values();
+if (! function_exists('render_schedules_page')) {
+    function render_schedules_page(Request $request, ?Patient $focusPatient = null, bool $openBooking = false)
+    {
+        $patientsQuery = Patient::query()
+            ->where(function ($query) {
+                $query->whereIn('lifecycle_status', [Patient::LIFECYCLE_ACTIVE, Patient::LIFECYCLE_INACTIVE])
+                    ->orWhereNull('lifecycle_status');
+            })
+            ->orderBy('name');
 
-    $staff = User::query()
-        ->orderBy('name')
-        ->get(['id', 'name', 'first_name', 'surname', 'primary_role', 'assigned_care_groups'])
-        ->filter(fn ($user) => user_is_care_worker($user))
-        ->map(function ($user) {
-            $fullName = trim((string) ($user->name ?: (($user->first_name ?? '').' '.($user->surname ?? ''))));
+        if ($focusPatient) {
+            $patientsQuery->where('id', $focusPatient->id);
+        }
 
-            return [
-                'id' => $user->id,
-                'name' => $fullName !== '' ? $fullName : 'Unnamed staff',
-                'role' => $user->primary_role ? Str::of($user->primary_role)->replace('_', ' ')->title()->toString() : 'Staff',
-                'assignedCareGroups' => $user->assignedCareGroupValues(),
-            ];
-        })
-        ->values();
+        $patients = $patientsQuery
+            ->get(['id', 'name', 'url_key', 'reference', 'lifecycle_status', 'care_group'])
+            ->map(fn ($patient) => [
+                'id' => $patient->id,
+                'name' => $patient->name,
+                'urlKey' => $patient->url_key,
+                'reference' => $patient->reference,
+                'lifecycleStatus' => $patient->normalizedLifecycleStatus(),
+                'lifecycleStatusLabel' => $patient->lifecycleStatusLabel(),
+                'isRosterable' => $patient->isRosterable(),
+                'careGroup' => $patient->care_group,
+                'careGroupLabel' => \App\Support\PatientRegistration::careGroupLabel($patient->care_group),
+            ])
+            ->values();
 
-    $entries = PatientSchedule::query()
-        ->with(['patient:id,name,url_key,reference', 'assignedUser:id,name,first_name,surname'])
-        ->orderBy('start_at')
-        ->limit(200)
-        ->get()
-        ->map(function ($entry) {
-            $staffName = trim((string) ($entry->assignedUser?->name ?? ''));
-            if ($staffName === '') {
-                $staffName = trim((string) (($entry->assignedUser?->first_name ?? '').' '.($entry->assignedUser?->surname ?? '')));
-            }
-            if ($staffName === '') {
-                $staffName = 'Unassigned';
-            }
+        $staff = User::query()
+            ->orderBy('name')
+            ->get(['id', 'name', 'first_name', 'surname', 'primary_role', 'assigned_care_groups'])
+            ->filter(fn ($user) => user_is_care_worker($user))
+            ->map(function ($user) {
+                $fullName = trim((string) ($user->name ?: (($user->first_name ?? '').' '.($user->surname ?? ''))));
 
-            $spansOvernight = $entry->start_at && $entry->end_at
-                && ! $entry->end_at->isSameDay($entry->start_at);
+                return [
+                    'id' => $user->id,
+                    'name' => $fullName !== '' ? $fullName : 'Unnamed staff',
+                    'role' => $user->primary_role ? Str::of($user->primary_role)->replace('_', ' ')->title()->toString() : 'Staff',
+                    'assignedCareGroups' => $user->assignedCareGroupValues(),
+                ];
+            })
+            ->values();
 
-            return [
-                'id' => $entry->id,
-                'patientName' => $entry->patient?->name ?? 'Unknown patient',
-                'patientUrlKey' => $entry->patient?->url_key,
-                'patientReference' => $entry->patient?->reference,
-                'staffName' => $staffName,
-                'assignedUserId' => $entry->assigned_user_id,
-                'startAt' => optional($entry->start_at)->toIso8601String(),
-                'endAt' => optional($entry->end_at)->toIso8601String(),
-                'spansOvernight' => $spansOvernight,
-                'purpose' => $entry->purpose,
-                'notes' => $entry->notes,
-                'completionStatus' => $entry->status,
-            ];
-        })
-        ->values();
+        $entriesQuery = PatientSchedule::query()
+            ->with(['patient:id,name,url_key,reference', 'assignedUser:id,name,first_name,surname'])
+            ->orderBy('start_at');
 
-    return Inertia::render('Schedules', [
-        'patients' => $patients,
-        'staff' => $staff,
-        'entries' => $entries,
-        'canManageRostering' => Rbac::canManageRostering(request()->user()),
-    ]);
+        if ($focusPatient) {
+            $entriesQuery->where('patient_id', $focusPatient->id);
+        }
+
+        $entries = $entriesQuery
+            ->limit(200)
+            ->get()
+            ->map(function ($entry) {
+                $staffName = trim((string) ($entry->assignedUser?->name ?? ''));
+                if ($staffName === '') {
+                    $staffName = trim((string) (($entry->assignedUser?->first_name ?? '').' '.($entry->assignedUser?->surname ?? '')));
+                }
+                if ($staffName === '') {
+                    $staffName = 'Unassigned';
+                }
+
+                $spansOvernight = $entry->start_at && $entry->end_at
+                    && ! $entry->end_at->isSameDay($entry->start_at);
+
+                return [
+                    'id' => $entry->id,
+                    'patientName' => $entry->patient?->name ?? 'Unknown patient',
+                    'patientUrlKey' => $entry->patient?->url_key,
+                    'patientReference' => $entry->patient?->reference,
+                    'staffName' => $staffName,
+                    'assignedUserId' => $entry->assigned_user_id,
+                    'startAt' => optional($entry->start_at)->toIso8601String(),
+                    'endAt' => optional($entry->end_at)->toIso8601String(),
+                    'spansOvernight' => $spansOvernight,
+                    'purpose' => $entry->purpose,
+                    'notes' => $entry->notes,
+                    'completionStatus' => $entry->status,
+                ];
+            })
+            ->values();
+
+        return Inertia::render('Schedules', [
+            'patients' => $patients,
+            'staff' => $staff,
+            'entries' => $entries,
+            'canManageRostering' => Rbac::canManageRostering($request->user()),
+            'focusPatient' => $focusPatient ? [
+                'id' => $focusPatient->id,
+                'name' => $focusPatient->name,
+                'urlKey' => $focusPatient->url_key,
+            ] : null,
+            'openBooking' => $openBooking,
+        ]);
+    }
+}
+
+Route::get('/schedules', function (Request $request) {
+    $focusPatientKey = trim((string) $request->query('patient', ''));
+    $focusPatient = $focusPatientKey !== ''
+        ? Patient::query()->where('url_key', $focusPatientKey)->first()
+        : null;
+
+    return render_schedules_page($request, $focusPatient, $request->boolean('book'));
 })->middleware(['auth', 'verified'])->name('schedules');
+
+Route::get('/patients/{patient}/schedules', function (Request $request, string $patient) {
+    $focusPatient = Patient::query()->where('url_key', $patient)->firstOrFail();
+
+    return render_schedules_page($request, $focusPatient, $request->boolean('book', true));
+})->middleware(['auth', 'verified'])->name('patients.schedules');
 
 Route::post('/schedules', function () {
     abort_unless(Rbac::canManageRostering(request()->user()), 403, 'You do not have permission to create schedules.');
@@ -6527,7 +6573,14 @@ Route::post('/schedules', function () {
         ['patient_url_key' => $patient->url_key],
     );
 
-    return redirect()->route('schedules')->with('success', 'Visit scheduled successfully.');
+    return redirect()
+        ->route(
+            request()->boolean('keep_patient_focus') ? 'patients.schedules' : 'schedules',
+            array_filter([
+                'patient' => request()->boolean('keep_patient_focus') ? $patient->url_key : null,
+            ]),
+        )
+        ->with('success', 'Visit scheduled successfully.');
 })->middleware(['auth', 'verified', 'throttle:5,1'])->name('schedules.store');
 
 // Backward-compatibility safety net:
@@ -8249,6 +8302,43 @@ Route::post('/patients/{patient}/handovers/{handover}/acknowledge', function (Re
         ->route('patients.handovers', $record->url_key)
         ->with('success', 'Handover acknowledged — receipt recorded for audit.');
 })->middleware(['auth', 'verified'])->name('patients.handovers.acknowledge');
+
+Route::get('/patients/{patient}/care-notes', function (Request $request, string $patient) {
+    $record = Patient::query()->where('url_key', $patient)->firstOrFail();
+    $filter = (string) $request->query('filter', 'all');
+    if (! in_array($filter, ['all', 'mine'], true)) {
+        $filter = 'all';
+    }
+
+    $entriesQuery = CareJournalEntry::query()
+        ->where('patient_id', $record->id)
+        ->with(['patient:id,name,url_key', 'author:id,name,first_name,surname'])
+        ->orderByDesc('recorded_at')
+        ->orderByDesc('id');
+
+    if ($filter === 'mine') {
+        $entriesQuery->where('author_user_id', $request->user()->id);
+    }
+
+    $entries = $entriesQuery
+        ->limit(200)
+        ->get()
+        ->map(fn (CareJournalEntry $entry) => map_care_journal_entry($entry, $request->user()))
+        ->values();
+
+    return Inertia::render('PatientCareNotes', [
+        'patientSlug' => $patient,
+        'patient' => [
+            'id' => $record->id,
+            'name' => $record->name,
+            'urlKey' => $record->url_key,
+        ],
+        'entries' => $entries,
+        'filter' => $filter,
+        'dailySupportCareLog' => DailySupportCareLog::frontendConfig(),
+        'staffName' => format_care_journal_author_name($request->user()),
+    ]);
+})->middleware(['auth', 'verified'])->name('patients.care-notes');
 
 Route::get('/patients/{patient}/notes', function (Request $request, string $patient) {
     $record = Patient::query()->where('url_key', $patient)->firstOrFail();

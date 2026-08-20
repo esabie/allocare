@@ -11,6 +11,7 @@ const tabs = [
     { key: 'handovers', label: 'Handovers', route: 'patients.handovers' },
     { key: 'wound_care', label: 'Wound care', route: 'patients.wound-care' },
     { key: 'documents', label: 'Documents', route: 'patients.documents' },
+    { key: 'care_notes', label: 'Care Notes', route: 'patients.care-notes' },
     { key: 'notes', label: 'Notes', route: 'patients.notes' },
     { key: 'logs', label: 'Logs', route: 'patients.logs' },
     { key: 'contacts', label: 'Contacts', route: 'patients.contacts' },

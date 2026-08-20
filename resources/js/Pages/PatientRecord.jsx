@@ -244,7 +244,7 @@ export default function PatientRecord({
                                     </span>
                                 ) : (
                                     <Link
-                                        href={route('schedules')}
+                                        href={route('patients.schedules', { patient: patientSlug, book: 1 })}
                                         title="Create a booked visit before checking in"
                                         className="rounded-xl border border-slate-300 bg-slate-100 px-4 py-2 text-sm font-semibold text-slate-500"
                                     >
@@ -809,7 +809,10 @@ export default function PatientRecord({
                                 ) : (
                                     <>
                                         <p className="text-sm text-slate-300">No upcoming visit scheduled.</p>
-                                        <Link href={route('schedules')} className="mt-3 inline-block rounded-lg bg-white px-3 py-2 text-xs font-semibold text-slate-900">
+                                        <Link
+                                            href={route('patients.schedules', { patient: patientSlug, book: 1 })}
+                                            className="mt-3 inline-block rounded-lg bg-white px-3 py-2 text-xs font-semibold text-slate-900"
+                                        >
                                             Create Schedule
                                         </Link>
                                     </>
