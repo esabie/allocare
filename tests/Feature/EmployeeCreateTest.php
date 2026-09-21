@@ -26,7 +26,7 @@ class EmployeeCreateTest extends TestCase
                 'surname' => 'Doe',
                 'email' => $email,
                 'username' => $username,
-                'password' => 'SecurePass1',
+                'password' => 'N0tGuessable!Pass',
                 'primary_role' => 'care_worker',
                 'date_of_birth' => '1990-05-15',
                 'sex' => 'Female',
@@ -60,7 +60,7 @@ class EmployeeCreateTest extends TestCase
                 'surname' => 'Doe',
                 'email' => 'no.groups.'.uniqid().'@example.com',
                 'username' => 'nogroups_'.uniqid(),
-                'password' => 'SecurePass1',
+                'password' => 'N0tGuessable!Pass',
                 'assigned_care_groups' => [],
             ])
             ->assertSessionHasErrors(['assigned_care_groups']);
@@ -79,7 +79,7 @@ class EmployeeCreateTest extends TestCase
                 'surname' => 'Doe',
                 'email' => 'bad.group.'.uniqid().'@example.com',
                 'username' => 'badgroup_'.uniqid(),
-                'password' => 'SecurePass1',
+                'password' => 'N0tGuessable!Pass',
                 'assigned_care_groups' => ['invalid_group'],
             ])
             ->assertSessionHasErrors(['assigned_care_groups.0']);
@@ -100,7 +100,7 @@ class EmployeeCreateTest extends TestCase
                 'surname' => 'Taylor',
                 'email' => $email,
                 'username' => 'sam_'.uniqid(),
-                'password' => 'SecurePass1',
+                'password' => 'N0tGuessable!Pass',
                 'date_of_birth' => '20/04/1995',
                 'assigned_care_groups' => ['palliative_care'],
             ])
@@ -127,7 +127,7 @@ class EmployeeCreateTest extends TestCase
                 'surname' => 'Born',
                 'email' => 'future.dob.'.uniqid().'@example.com',
                 'username' => 'future_'.uniqid(),
-                'password' => 'SecurePass1',
+                'password' => 'N0tGuessable!Pass',
                 'date_of_birth' => $futureDob,
                 'assigned_care_groups' => ['community_care'],
             ])
@@ -152,7 +152,7 @@ class EmployeeCreateTest extends TestCase
                 'surname' => 'Doe',
                 'email' => 'taken@example.com',
                 'username' => 'taken_user',
-                'password' => 'SecurePass1',
+                'password' => 'N0tGuessable!Pass',
                 'assigned_care_groups' => ['community_care'],
             ])
             ->assertSessionHasErrors(['email', 'username']);

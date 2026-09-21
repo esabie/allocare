@@ -57,6 +57,7 @@ use App\Support\VisitStatus;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Validation\Rule;
+use Illuminate\Validation\Rules\Password;
 use Illuminate\Validation\ValidationException;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\File;
@@ -11311,7 +11312,7 @@ Route::post('/employees', function () {
         'primary_role' => ['nullable', 'string', 'max:100'],
         'photo' => ['nullable', 'image', 'mimes:jpg,jpeg,png', 'max:3072'],
         'username' => ['required', 'string', 'max:255', 'unique:users,username'],
-        'password' => ['required', 'string', 'min:8'],
+        'password' => ['required', Password::defaults()],
     ], \App\Support\PatientRegistration::employeeCareGroupRules()));
 
     $assignedCareGroups = \App\Support\PatientRegistration::normalizeAssignedCareGroups($payload['assigned_care_groups'] ?? []);

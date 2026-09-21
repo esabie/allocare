@@ -8,20 +8,32 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Validation\Rules\Password;
 use Illuminate\Validation\ValidationException;
+use Inertia\Inertia;
+use Inertia\Response;
 
-class PasswordController extends Controller
+class ForcedPasswordChangeController extends Controller
 {
-    /**
-     * Update the user's password.
-     */
-    public function update(Request $request): RedirectResponse
+    public function create(Request $request): Response|RedirectResponse
     {
+        if (! $request->user()?->mustResetPassword()) {
+            return redirect()->route('dashboard');
+        }
+
+        return Inertia::render('Auth/ForcePasswordChange');
+    }
+
+    public function store(Request $request): RedirectResponse
+    {
+        $user = $request->user();
+
+        if ($user === null || ! $user->mustResetPassword()) {
+            return redirect()->route('dashboard');
+        }
+
         $validated = $request->validate([
             'current_password' => ['required', 'current_password'],
-            'password' => ['required', Password::defaults(), 'confirmed'],
+            'password' => ['required', 'confirmed', Password::defaults()],
         ]);
-
-        $user = $request->user();
 
         if (Hash::check($validated['password'], $user->password)) {
             throw ValidationException::withMessages([
@@ -34,6 +46,6 @@ class PasswordController extends Controller
             'must_reset_password' => false,
         ])->save();
 
-        return back();
+        return redirect()->route('dashboard')->with('status', 'Your password has been updated.');
     }
 }

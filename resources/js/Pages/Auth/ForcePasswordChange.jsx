@@ -5,34 +5,27 @@ import { useEffect } from 'react';
 const PASSWORD_REQUIREMENTS =
     'Use at least 8 characters, including upper and lower case letters, a number, and a symbol.';
 
-export default function ResetPassword({ token, email }) {
+export default function ForcePasswordChange() {
     const { data, setData, post, processing, errors, reset } = useForm({
-        token: token,
-        email: email,
+        current_password: '',
         password: '',
         password_confirmation: '',
     });
 
     useEffect(() => {
         return () => {
-            reset('password', 'password_confirmation');
+            reset('current_password', 'password', 'password_confirmation');
         };
     }, []);
 
     const submit = (e) => {
         e.preventDefault();
-        post(route('password.store'));
+        post(route('password.force-change.store'));
     };
 
     return (
         <>
-            <Head title="Reset Password">
-                <link rel="preconnect" href="https://fonts.bunny.net" />
-                <link
-                    href="https://fonts.bunny.net/css?family=fraunces:500,600|manrope:400,500,600,700&display=swap"
-                    rel="stylesheet"
-                />
-            </Head>
+            <Head title="Update Password" />
 
             <div
                 className="relative flex min-h-screen items-center justify-center overflow-hidden px-6 py-16"
@@ -52,32 +45,32 @@ export default function ResetPassword({ token, email }) {
                     </div>
 
                     <p className="mb-3 text-center text-xs font-semibold uppercase tracking-[0.22em] text-[#1f5fd0]">
-                        Account recovery
+                        Security update
                     </p>
-                    <h1
-                        className="text-center text-3xl font-semibold leading-tight text-[#09153a] sm:text-4xl"
-                        style={{ fontFamily: "'Fraunces', serif" }}
-                    >
-                        Choose a new password
+                    <h1 className="text-center text-3xl font-bold leading-tight text-[#09153a]">
+                        Create a new password
                     </h1>
-                    <p className="mt-3 text-center text-sm leading-relaxed text-slate-600">{PASSWORD_REQUIREMENTS}</p>
+                    <p className="mt-3 text-center text-sm leading-relaxed text-slate-600">
+                        For security, you must set a new password before continuing. {PASSWORD_REQUIREMENTS}
+                    </p>
 
                     <form onSubmit={submit} className="mt-8 space-y-5">
                         <div>
-                            <label htmlFor="email" className="mb-2 block text-sm font-semibold text-slate-700">
-                                Work email
+                            <label htmlFor="current_password" className="mb-2 block text-sm font-semibold text-slate-700">
+                                Current password
                             </label>
                             <input
-                                id="email"
-                                type="email"
-                                name="email"
-                                value={data.email}
-                                autoComplete="username"
-                                onChange={(e) => setData('email', e.target.value)}
+                                id="current_password"
+                                type="password"
+                                name="current_password"
+                                value={data.current_password}
+                                autoComplete="current-password"
+                                autoFocus
+                                onChange={(e) => setData('current_password', e.target.value)}
                                 className="block w-full appearance-none rounded-2xl border border-slate-200 bg-white px-4 py-3.5 text-[15px] font-medium text-[#09153a] shadow-sm outline-none transition focus:border-[#1f5fd0] focus:ring-4 focus:ring-[#cce0ff]"
                                 required
                             />
-                            <InputError message={errors.email} className="mt-2" />
+                            <InputError message={errors.current_password} className="mt-2" />
                         </div>
 
                         <div>
@@ -90,7 +83,6 @@ export default function ResetPassword({ token, email }) {
                                 name="password"
                                 value={data.password}
                                 autoComplete="new-password"
-                                autoFocus
                                 onChange={(e) => setData('password', e.target.value)}
                                 className="block w-full appearance-none rounded-2xl border border-slate-200 bg-white px-4 py-3.5 text-[15px] font-medium text-[#09153a] shadow-sm outline-none transition focus:border-[#1f5fd0] focus:ring-4 focus:ring-[#cce0ff]"
                                 required
@@ -103,7 +95,7 @@ export default function ResetPassword({ token, email }) {
                                 htmlFor="password_confirmation"
                                 className="mb-2 block text-sm font-semibold text-slate-700"
                             >
-                                Confirm password
+                                Confirm new password
                             </label>
                             <input
                                 id="password_confirmation"
@@ -123,7 +115,7 @@ export default function ResetPassword({ token, email }) {
                             disabled={processing}
                             className="w-full rounded-full bg-[#09153a] px-5 py-3.5 text-sm font-semibold text-white transition hover:brightness-110 disabled:opacity-60"
                         >
-                            {processing ? 'Saving...' : 'Reset password'}
+                            {processing ? 'Saving...' : 'Save new password'}
                         </button>
                     </form>
                 </div>

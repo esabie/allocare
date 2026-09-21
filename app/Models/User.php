@@ -9,6 +9,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
 use Laravel\Sanctum\HasApiTokens;
+use App\Notifications\ResetPasswordNotification;
 
 class User extends Authenticatable
 {
@@ -40,6 +41,7 @@ class User extends Authenticatable
         'dbs_issue_date',
         'dbs_expiry_date',
         'dbs_status',
+        'must_reset_password',
     ];
 
     protected $hidden = [
@@ -55,6 +57,7 @@ class User extends Authenticatable
         'two_factor_confirmed_at' => 'datetime',
         'password' => 'hashed',
         'mfa_enabled' => 'boolean',
+        'must_reset_password' => 'boolean',
         'assigned_care_groups' => 'array',
         'two_factor_secret' => 'encrypted',
         'two_factor_recovery_codes' => 'encrypted:array',
@@ -67,6 +70,25 @@ class User extends Authenticatable
         return $this->two_factor_confirmed_at !== null
             && is_string($this->two_factor_secret)
             && $this->two_factor_secret !== '';
+    }
+
+    public function mustResetPassword(): bool
+    {
+        return (bool) $this->must_reset_password;
+    }
+
+    public function clearPasswordResetRequirement(): void
+    {
+        if (! $this->must_reset_password) {
+            return;
+        }
+
+        $this->forceFill(['must_reset_password' => false])->save();
+    }
+
+    public function sendPasswordResetNotification($token): void
+    {
+        $this->notify(new ResetPasswordNotification($token));
     }
 
     /**
