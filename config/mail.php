@@ -29,7 +29,7 @@ return [
     | mailers below. You are free to add additional mailers as required.
     |
     | Supported: "smtp", "sendmail", "mailgun", "ses", "ses-v2",
-    |            "postmark", "log", "array", "failover", "roundrobin"
+    |            "postmark", "resend", "log", "array", "failover", "roundrobin"
     |
     */
 
@@ -56,6 +56,10 @@ return [
             // 'client' => [
             //     'timeout' => 5,
             // ],
+        ],
+
+        'resend' => [
+            'transport' => 'resend',
         ],
 
         'mailgun' => [
