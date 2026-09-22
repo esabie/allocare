@@ -10,6 +10,8 @@ use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Validation\ValidationException;
+use Inertia\Inertia;
+use Symfony\Component\HttpFoundation\Response;
 use Throwable;
 
 class Handler extends ExceptionHandler
@@ -33,6 +35,34 @@ class Handler extends ExceptionHandler
         $this->reportable(function (Throwable $e) {
             //
         });
+    }
+
+    public function render($request, Throwable $e): Response
+    {
+        $response = parent::render($request, $e);
+
+        if ($this->shouldRenderFriendlyInertiaError($request, $response)) {
+            return Inertia::render('Error', [
+                'status' => $response->getStatusCode(),
+            ])
+                ->toResponse($request)
+                ->setStatusCode($response->getStatusCode());
+        }
+
+        return $response;
+    }
+
+    protected function shouldRenderFriendlyInertiaError(Request $request, Response $response): bool
+    {
+        if (! $request->header('X-Inertia')) {
+            return false;
+        }
+
+        if (config('app.debug') && app()->environment('local')) {
+            return false;
+        }
+
+        return in_array($response->getStatusCode(), [403, 404, 419, 429, 500, 503], true);
     }
 
     /**
@@ -94,7 +124,7 @@ class Handler extends ExceptionHandler
 
         // Reduce noisy replay spam: log identical validation failures once per 30s.
         $cacheKey = 'validation-log:'.$signature;
-        if (!Cache::add($cacheKey, true, now()->addSeconds(30))) {
+        if (! Cache::add($cacheKey, true, now()->addSeconds(30))) {
             return;
         }
 

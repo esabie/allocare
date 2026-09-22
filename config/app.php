@@ -159,6 +159,7 @@ return [
         /*
          * Package Service Providers...
          */
+        Resend\Laravel\ResendServiceProvider::class,
 
         /*
          * Application Service Providers...
